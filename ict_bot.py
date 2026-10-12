@@ -3,7 +3,7 @@
 # Based on: ICT Gold v9.5.1 SELECTIVE
 # Models: Judas, 2022-AM, SB-PM, OB, FVG
 # Orders: TP1=50%, TP2=30%, TP3=20% | SL→BE after TP1
-# Features: Strong retry on failure, never crash
+# Features: Strong retry, Idempotency-Key, never crash
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -13,6 +13,7 @@ import requests
 import pandas as pd
 import numpy as np
 import traceback
+import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -101,11 +102,10 @@ def send_telegram(message):
 
 
 # ═══════════════════════════════════════════════════════════════
-# MT5 EXECUTION FUNCTIONS — مع Retry قوي
+# MT5 EXECUTION — مع Idempotency-Key + Retry
 # ═══════════════════════════════════════════════════════════════
 def place_order(account_id, symbol, direction, volume, sl, tp, tag=""):
     url = BASE_URL + "/v1/accounts/" + account_id + "/orders"
-    headers = {"Authorization": "Bearer " + TICKERALL_API_KEY, "Content-Type": "application/json"}
     side = "buy" if direction == "BUY" else "sell"
     payload = {
         "symbol": symbol,
@@ -117,9 +117,15 @@ def place_order(account_id, symbol, direction, volume, sl, tp, tag=""):
         "comment": "ICT-" + tag,
         "magic": MAGIC_NUMBER,
     }
+    idem_key = "ict-" + tag + "-" + str(int(time.time())) + "-" + str(uuid.uuid4())[:8]
+    headers = {
+        "Authorization": "Bearer " + TICKERALL_API_KEY,
+        "Content-Type": "application/json",
+        "Idempotency-Key": idem_key,
+    }
     for attempt in range(1, ORDER_RETRIES + 1):
         try:
-            print("Order " + tag + " attempt " + str(attempt) + ": " + side + " " + str(volume))
+            print("Order " + tag + " attempt " + str(attempt) + ": " + side + " " + str(volume) + " key=" + idem_key[:20])
             r = requests.post(url, headers=headers, json=payload, timeout=ORDER_TIMEOUT)
             if r.status_code in [200, 201]:
                 result = r.json()
@@ -139,8 +145,13 @@ def place_order(account_id, symbol, direction, volume, sl, tp, tag=""):
 
 def modify_sl(account_id, order_id, new_sl):
     url = BASE_URL + "/v1/accounts/" + account_id + "/positions/" + str(order_id)
-    headers = {"Authorization": "Bearer " + TICKERALL_API_KEY, "Content-Type": "application/json"}
     payload = {"sl": float(new_sl)}
+    idem_key = "ict-mod-" + str(int(time.time())) + "-" + str(uuid.uuid4())[:8]
+    headers = {
+        "Authorization": "Bearer " + TICKERALL_API_KEY,
+        "Content-Type": "application/json",
+        "Idempotency-Key": idem_key,
+    }
     for attempt in range(1, 4):
         try:
             r = requests.put(url, headers=headers, json=payload, timeout=ORDER_TIMEOUT)
@@ -160,7 +171,11 @@ def modify_sl(account_id, order_id, new_sl):
 
 def close_position(account_id, order_id):
     url = BASE_URL + "/v1/accounts/" + account_id + "/positions/" + str(order_id)
-    headers = {"Authorization": "Bearer " + TICKERALL_API_KEY}
+    idem_key = "ict-cls-" + str(int(time.time())) + "-" + str(uuid.uuid4())[:8]
+    headers = {
+        "Authorization": "Bearer " + TICKERALL_API_KEY,
+        "Idempotency-Key": idem_key,
+    }
     for attempt in range(1, 4):
         try:
             r = requests.delete(url, headers=headers, timeout=ORDER_TIMEOUT)
@@ -168,7 +183,7 @@ def close_position(account_id, order_id):
                 print("Position closed: " + str(order_id))
                 return True
             else:
-                print("Close failed: " + str(r.status_code))
+                print("Close failed: " + str(r.status_code) + " | " + r.text[:100])
                 if attempt < 3:
                     time.sleep(3)
         except Exception as e:
@@ -179,7 +194,7 @@ def close_position(account_id, order_id):
 
 
 # ═══════════════════════════════════════════════════════════════
-# OPEN SESSION — Retry قوي بـ 5 محاولات + Backoff
+# OPEN SESSION — Retry 5x + Backoff
 # ═══════════════════════════════════════════════════════════════
 def open_session(max_retries=SESSION_RETRIES):
     url = BASE_URL + "/v1/sessions"
@@ -960,7 +975,6 @@ def main():
     except Exception as e:
         print("FATAL Error: " + str(e))
         traceback.print_exc()
-        # Never crash — GitHub will retry next run in 5 min
         try:
             save_state(state)
         except:
