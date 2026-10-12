@@ -2,7 +2,7 @@ name: ICT Gold Signals Bot
 
 on:
   schedule:
-    - cron: '*/5 * * * 1-5'
+    - cron: '0 * * * 1-5'
   workflow_dispatch:
 
 concurrency:
@@ -15,7 +15,7 @@ permissions:
 jobs:
   run-strategy:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 60
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -31,7 +31,7 @@ jobs:
         run: |
           pip install pandas numpy requests pytz
 
-      - name: Run ICT Gold Bot
+      - name: Run ICT Gold Bot (55-min loop)
         env:
           TICKERALL_API_KEY: ${{ secrets.TICKERALL_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
