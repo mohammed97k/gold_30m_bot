@@ -1,0 +1,52 @@
+name: ICT Gold Signals Bot
+
+on:
+  schedule:
+    - cron: '*/5 * * * 1-5'
+  workflow_dispatch:
+
+concurrency:
+  group: ict-gold-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run-strategy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas numpy requests pytz
+
+      - name: Run ICT Gold Bot
+        env:
+          TICKERALL_API_KEY: ${{ secrets.TICKERALL_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_GROUP_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}
+          MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
+          MT5_SERVER: ${{ secrets.MT5_SERVER }}
+          MT5_ACCOUNT: ${{ secrets.MT5_ACCOUNT }}
+        run: python -u ict_bot.py
+
+      - name: Commit state file
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add state.json || true
+          git diff --staged --quiet || git commit -m "Update state [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && break || sleep 5
+          done
