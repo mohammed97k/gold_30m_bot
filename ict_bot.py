@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════════
-# ICT Gold Strategy Bot — XAUUSD! (M30)
+# ICT Gold Strategy Bot — XAUUSD! (M30) — AUTO TRADE
 # Based on: ICT Gold v9.5.1 SELECTIVE
 # Models: Judas, 2022-AM, SB-PM, OB, FVG
+# Orders: TP1=50%, TP2=30%, TP3=20% | SL→BE after TP1
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -54,6 +55,13 @@ MSS_EXPIRY = 15
 SWEEP_EXPIRY = 20
 STALE_DATA_MINUTES = 90
 
+# ── AUTO TRADE ──
+ENABLE_AUTO_TRADE = True
+LOT_TP1 = 0.05
+LOT_TP2 = 0.03
+LOT_TP3 = 0.02
+MAGIC_NUMBER = 20261012
+
 
 def fmt_mosul(dt_utc):
     return dt_utc.astimezone(MOSUL_TZ).strftime('%I:%M %p')
@@ -77,6 +85,76 @@ def send_telegram(message):
                 print("TG Error attempt " + str(attempt) + ": " + str(e))
                 if attempt < 3:
                     time.sleep(3)
+
+
+# ═══════════════════════════════════════════════════════════════
+# MT5 EXECUTION FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
+def place_order(account_id, symbol, direction, volume, sl, tp, tag=""):
+    url = BASE_URL + "/v1/accounts/" + account_id + "/orders"
+    headers = {"Authorization": "Bearer " + TICKERALL_API_KEY, "Content-Type": "application/json"}
+    side = "buy" if direction == "BUY" else "sell"
+    payload = {
+        "symbol": symbol,
+        "side": side,
+        "type": "market",
+        "volume": volume,
+        "sl": float(sl),
+        "tp": float(tp),
+        "comment": "ICT-" + tag,
+        "magic": MAGIC_NUMBER,
+    }
+    for attempt in range(1, 4):
+        try:
+            print("Order " + tag + " attempt " + str(attempt) + ": " + side + " " + str(volume))
+            r = requests.post(url, headers=headers, json=payload, timeout=30)
+            if r.status_code in [200, 201]:
+                result = r.json()
+                order_id = result.get("orderId") or result.get("ticket") or result.get("id")
+                print("Order " + tag + " placed: " + str(order_id))
+                return {"success": True, "order_id": order_id}
+            else:
+                print("Order " + tag + " failed: " + str(r.status_code) + " | " + r.text[:200])
+                if attempt < 3:
+                    time.sleep(5)
+        except Exception as e:
+            print("Order " + tag + " error: " + str(e))
+            if attempt < 3:
+                time.sleep(5)
+    return {"success": False, "order_id": None}
+
+
+def modify_sl(account_id, order_id, new_sl):
+    url = BASE_URL + "/v1/accounts/" + account_id + "/positions/" + str(order_id)
+    headers = {"Authorization": "Bearer " + TICKERALL_API_KEY, "Content-Type": "application/json"}
+    payload = {"sl": float(new_sl)}
+    try:
+        r = requests.put(url, headers=headers, json=payload, timeout=30)
+        if r.status_code in [200, 201]:
+            print("SL modified: " + str(order_id) + " -> " + str(new_sl))
+            return True
+        else:
+            print("SL modify failed: " + str(r.status_code) + " | " + r.text[:200])
+            return False
+    except Exception as e:
+        print("SL modify error: " + str(e))
+        return False
+
+
+def close_position(account_id, order_id):
+    url = BASE_URL + "/v1/accounts/" + account_id + "/positions/" + str(order_id)
+    headers = {"Authorization": "Bearer " + TICKERALL_API_KEY}
+    try:
+        r = requests.delete(url, headers=headers, timeout=30)
+        if r.status_code in [200, 201, 204]:
+            print("Position closed: " + str(order_id))
+            return True
+        else:
+            print("Close failed: " + str(r.status_code))
+            return False
+    except Exception as e:
+        print("Close error: " + str(e))
+        return False
 
 
 def open_session(max_retries=3):
@@ -246,7 +324,14 @@ def manage_trade(state, df_entry, now_utc):
     elapsed = (now_utc - entry_dt).total_seconds()
     bars_elapsed = elapsed / 1800
 
+    # TIME EXIT
     if bars_elapsed >= MAX_BARS_TRADE:
+        acc_id = t.get("account_id", "")
+        orders = t.get("orders", {})
+        for tag in ["tp1", "tp2", "tp3"]:
+            oid = orders.get(tag)
+            if oid and acc_id:
+                close_position(acc_id, oid)
         state["active_trade"] = None
         send_telegram(
             "⏱ TIME EXIT (60 bars)\n"
@@ -254,7 +339,8 @@ def manage_trade(state, df_entry, now_utc):
             "Model: " + str(t['model']) + "\n"
             "Dir: " + d + "\n"
             "Entry: " + str(e) + "\n"
-            "Time: " + fmt_mosul(now_utc)
+            "→ All positions closed\n"
+            "⏰ " + fmt_mosul(now_utc)
         )
         return
 
@@ -269,27 +355,17 @@ def manage_trade(state, df_entry, now_utc):
         bt = row["datetime"]
         current_sl = t["sl"]
 
-        sl_hit = False
-        if d == "BUY":
-            if bl <= current_sl:
-                sl_hit = True
-        else:
-            if bh >= current_sl:
-                sl_hit = True
-
-        if sl_hit:
-            if t["tp1_hit"]:
-                send_telegram(
-                    "🟡 STOP (BE)\n"
-                    "━━━━━━━━━━━━━━━\n"
-                    "SL after TP1 (Breakeven)\n"
-                    "Model: " + str(t['model']) + "\n"
-                    "Dir: " + d + "\n"
-                    "Entry: " + str(e) + "\n"
-                    "SL: " + str(current_sl) + "\n"
-                    "Time: " + fmt_mosul(bt)
-                )
+        # SL HIT — only if TP1 not hit yet
+        if not t["tp1_hit"]:
+            sl_hit = False
+            if d == "BUY":
+                if bl <= current_sl:
+                    sl_hit = True
             else:
+                if bh >= current_sl:
+                    sl_hit = True
+            if sl_hit:
+                state["active_trade"] = None
                 send_telegram(
                     "🛑 STOP LOSS ❌\n"
                     "━━━━━━━━━━━━━━━\n"
@@ -297,54 +373,66 @@ def manage_trade(state, df_entry, now_utc):
                     "Dir: " + d + "\n"
                     "Entry: " + str(e) + "\n"
                     "SL: " + str(current_sl) + "\n"
-                    "Time: " + fmt_mosul(bt)
+                    "→ All orders closed\n"
+                    "⏰ " + fmt_mosul(bt)
                 )
-            state["active_trade"] = None
-            return
+                return
 
+        # TP1 HIT — 50% closes, SL to BE for remaining
         if not t["tp1_hit"]:
             hit = (d == "BUY" and bh >= tp1) or (d == "SELL" and bl <= tp1)
             if hit:
                 t["tp1_hit"] = True
                 t["sl"] = e
+                acc_id = t.get("account_id", "")
+                orders = t.get("orders", {})
+                updated = 0
+                for tag in ["tp2", "tp3"]:
+                    oid = orders.get(tag)
+                    if oid and acc_id:
+                        if modify_sl(acc_id, oid, e):
+                            updated += 1
                 send_telegram(
-                    "🎯 TP1 HIT!\n"
+                    "🎯 TP1 HIT! (50% closed)\n"
                     "━━━━━━━━━━━━━━━\n"
                     "Model: " + str(t['model']) + "\n"
                     "Dir: " + d + "\n"
                     "Entry: " + str(e) + "\n"
                     "TP1: " + str(tp1) + "\n"
-                    "→ Move SL to BE: " + str(e) + "\n"
-                    "Time: " + fmt_mosul(bt)
+                    "→ SL to BE: " + str(e) + "\n"
+                    "→ Updated " + str(updated) + "/2 remaining\n"
+                    "⏰ " + fmt_mosul(bt)
                 )
 
+        # TP2 HIT
         if t["tp1_hit"] and not t["tp2_hit"]:
             hit = (d == "BUY" and bh >= tp2) or (d == "SELL" and bl <= tp2)
             if hit:
                 t["tp2_hit"] = True
                 send_telegram(
-                    "🎯🎯 TP2 HIT!\n"
+                    "🎯🎯 TP2 HIT! (30% closed)\n"
                     "━━━━━━━━━━━━━━━\n"
                     "Model: " + str(t['model']) + "\n"
                     "Dir: " + d + "\n"
                     "Entry: " + str(e) + "\n"
                     "TP2: " + str(tp2) + "\n"
-                    "Time: " + fmt_mosul(bt)
+                    "⏰ " + fmt_mosul(bt)
                 )
 
+        # TP3 HIT
         if t["tp2_hit"] and not t["tp3_hit"]:
             hit = (d == "BUY" and bh >= tp3) or (d == "SELL" and bl <= tp3)
             if hit:
                 t["tp3_hit"] = True
                 send_telegram(
-                    "🎯🎯🎯 TP3 HIT!\n"
+                    "🎯🎯🎯 TP3 HIT! (100% closed)\n"
                     "━━━━━━━━━━━━━━━\n"
                     "Model: " + str(t['model']) + "\n"
                     "Dir: " + d + "\n"
                     "Entry: " + str(e) + "\n"
                     "TP3: " + str(tp3) + "\n"
                     "★ TRADE COMPLETE ★\n"
-                    "Time: " + fmt_mosul(bt)
+                    "⏰ " + fmt_mosul(bt)
                 )
                 state["active_trade"] = None
                 return
@@ -688,7 +776,7 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
 
 def main():
     print("=" * 60)
-    print("ICT Gold Bot (XAUUSD! M30) — Start")
+    print("ICT Gold Bot (XAUUSD! M30) — AUTO TRADE")
     print("=" * 60)
     try:
         state = load_state()
@@ -719,6 +807,7 @@ def main():
             save_state(state)
             return
 
+        # Active trade management
         if state["active_trade"] is not None:
             print("Managing active trade...")
             manage_trade(state, df30, now_utc)
@@ -761,10 +850,6 @@ def main():
             return
 
         print("Signal found!")
-        state["active_trade"] = {**sig, "tp1_hit": False, "tp2_hit": False, "tp3_hit": False, "entry_time": now_utc.isoformat()}
-        state["trade_count_today"] += 1
-        state["last_entry_time"] = now_utc.isoformat()
-        state["models_done_today"].append(sig["model"])
 
         arrow = "🟢 BUY" if sig['direction'] == "BUY" else "🔴 SELL"
         send_telegram(
@@ -780,6 +865,60 @@ def main():
             "━━━━━━━━━━━━━━━\n"
             "🕐 " + fmt_mosul(now_utc) + " (Baghdad)"
         )
+
+        # ═══ AUTO TRADE — 3 ORDERS ═══
+        orders = {}
+        if ENABLE_AUTO_TRADE:
+            print("Executing 3 partial orders...")
+
+            r1 = place_order(account_id, SYMBOL, sig['direction'], LOT_TP1, sig['sl'], sig['tp1'], tag="tp1")
+            if r1["success"]:
+                orders["tp1"] = r1["order_id"]
+
+            r2 = place_order(account_id, SYMBOL, sig['direction'], LOT_TP2, sig['sl'], sig['tp2'], tag="tp2")
+            if r2["success"]:
+                orders["tp2"] = r2["order_id"]
+
+            r3 = place_order(account_id, SYMBOL, sig['direction'], LOT_TP3, sig['sl'], sig['tp3'], tag="tp3")
+            if r3["success"]:
+                orders["tp3"] = r3["order_id"]
+
+            success_count = len(orders)
+
+            if success_count >= 1:
+                send_telegram(
+                    "✅ ORDERS EXECUTED\n"
+                    "━━━━━━━━━━━━━━━\n"
+                    "Total: " + str(success_count) + "/3 orders\n"
+                    "• TP1: " + str(LOT_TP1) + " lot\n"
+                    "• TP2: " + str(LOT_TP2) + " lot\n"
+                    "• TP3: " + str(LOT_TP3) + " lot\n"
+                    "Symbol: " + SYMBOL + "\n"
+                    "🕐 " + fmt_mosul(now_utc)
+                )
+            else:
+                send_telegram(
+                    "❌ ALL ORDERS FAILED\n"
+                    "━━━━━━━━━━━━━━━\n"
+                    "Signal sent but no execution\n"
+                    "🕐 " + fmt_mosul(now_utc)
+                )
+        else:
+            print("Auto-trade disabled — signal only")
+
+        # Save trade state
+        state["active_trade"] = {
+            **sig,
+            "tp1_hit": False,
+            "tp2_hit": False,
+            "tp3_hit": False,
+            "entry_time": now_utc.isoformat(),
+            "orders": orders,
+            "account_id": account_id
+        }
+        state["trade_count_today"] += 1
+        state["last_entry_time"] = now_utc.isoformat()
+        state["models_done_today"].append(sig["model"])
 
         save_state(state)
     except Exception as e:
