@@ -1,8 +1,9 @@
 # ═══════════════════════════════════════════════════════════════
-# ICT Gold Strategy Bot — XAUUSD! (M30) — AUTO TRADE
+# ICT Gold Strategy Bot — XAUUSD! (M30) — AUTO TRADE + RETRY
 # Based on: ICT Gold v9.5.1 SELECTIVE
 # Models: Judas, 2022-AM, SB-PM, OB, FVG
 # Orders: TP1=50%, TP2=30%, TP3=20% | SL→BE after TP1
+# Features: Strong retry on failure, never crash
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -62,12 +63,24 @@ LOT_TP2 = 0.03
 LOT_TP3 = 0.02
 MAGIC_NUMBER = 20261012
 
+# ── RETRY SETTINGS ──
+SESSION_RETRIES = 5
+CANDLE_RETRIES = 3
+ORDER_RETRIES = 3
+SESSION_TIMEOUT = 15
+CANDLE_TIMEOUT = 30
+ORDER_TIMEOUT = 20
+BACKOFF_DELAYS = [2, 4, 6, 10, 15]
+
 
 def fmt_mosul(dt_utc):
     return dt_utc.astimezone(MOSUL_TZ).strftime('%I:%M %p')
 
 
 def send_telegram(message):
+    if not TELEGRAM_BOT_TOKEN:
+        print("TG: token missing, skip")
+        return
     chat_ids = [c for c in [TELEGRAM_CHAT_ID, TELEGRAM_GROUP_CHAT_ID] if c]
     for chat_id in chat_ids:
         url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
@@ -88,7 +101,7 @@ def send_telegram(message):
 
 
 # ═══════════════════════════════════════════════════════════════
-# MT5 EXECUTION FUNCTIONS
+# MT5 EXECUTION FUNCTIONS — مع Retry قوي
 # ═══════════════════════════════════════════════════════════════
 def place_order(account_id, symbol, direction, volume, sl, tp, tag=""):
     url = BASE_URL + "/v1/accounts/" + account_id + "/orders"
@@ -104,10 +117,10 @@ def place_order(account_id, symbol, direction, volume, sl, tp, tag=""):
         "comment": "ICT-" + tag,
         "magic": MAGIC_NUMBER,
     }
-    for attempt in range(1, 4):
+    for attempt in range(1, ORDER_RETRIES + 1):
         try:
             print("Order " + tag + " attempt " + str(attempt) + ": " + side + " " + str(volume))
-            r = requests.post(url, headers=headers, json=payload, timeout=30)
+            r = requests.post(url, headers=headers, json=payload, timeout=ORDER_TIMEOUT)
             if r.status_code in [200, 201]:
                 result = r.json()
                 order_id = result.get("orderId") or result.get("ticket") or result.get("id")
@@ -115,12 +128,12 @@ def place_order(account_id, symbol, direction, volume, sl, tp, tag=""):
                 return {"success": True, "order_id": order_id}
             else:
                 print("Order " + tag + " failed: " + str(r.status_code) + " | " + r.text[:200])
-                if attempt < 3:
-                    time.sleep(5)
+                if attempt < ORDER_RETRIES:
+                    time.sleep(BACKOFF_DELAYS[min(attempt - 1, len(BACKOFF_DELAYS) - 1)])
         except Exception as e:
             print("Order " + tag + " error: " + str(e))
-            if attempt < 3:
-                time.sleep(5)
+            if attempt < ORDER_RETRIES:
+                time.sleep(BACKOFF_DELAYS[min(attempt - 1, len(BACKOFF_DELAYS) - 1)])
     return {"success": False, "order_id": None}
 
 
@@ -128,36 +141,47 @@ def modify_sl(account_id, order_id, new_sl):
     url = BASE_URL + "/v1/accounts/" + account_id + "/positions/" + str(order_id)
     headers = {"Authorization": "Bearer " + TICKERALL_API_KEY, "Content-Type": "application/json"}
     payload = {"sl": float(new_sl)}
-    try:
-        r = requests.put(url, headers=headers, json=payload, timeout=30)
-        if r.status_code in [200, 201]:
-            print("SL modified: " + str(order_id) + " -> " + str(new_sl))
-            return True
-        else:
-            print("SL modify failed: " + str(r.status_code) + " | " + r.text[:200])
-            return False
-    except Exception as e:
-        print("SL modify error: " + str(e))
-        return False
+    for attempt in range(1, 4):
+        try:
+            r = requests.put(url, headers=headers, json=payload, timeout=ORDER_TIMEOUT)
+            if r.status_code in [200, 201]:
+                print("SL modified: " + str(order_id) + " -> " + str(new_sl))
+                return True
+            else:
+                print("SL modify failed: " + str(r.status_code) + " | " + r.text[:200])
+                if attempt < 3:
+                    time.sleep(3)
+        except Exception as e:
+            print("SL modify error: " + str(e))
+            if attempt < 3:
+                time.sleep(3)
+    return False
 
 
 def close_position(account_id, order_id):
     url = BASE_URL + "/v1/accounts/" + account_id + "/positions/" + str(order_id)
     headers = {"Authorization": "Bearer " + TICKERALL_API_KEY}
-    try:
-        r = requests.delete(url, headers=headers, timeout=30)
-        if r.status_code in [200, 201, 204]:
-            print("Position closed: " + str(order_id))
-            return True
-        else:
-            print("Close failed: " + str(r.status_code))
-            return False
-    except Exception as e:
-        print("Close error: " + str(e))
-        return False
+    for attempt in range(1, 4):
+        try:
+            r = requests.delete(url, headers=headers, timeout=ORDER_TIMEOUT)
+            if r.status_code in [200, 201, 204]:
+                print("Position closed: " + str(order_id))
+                return True
+            else:
+                print("Close failed: " + str(r.status_code))
+                if attempt < 3:
+                    time.sleep(3)
+        except Exception as e:
+            print("Close error: " + str(e))
+            if attempt < 3:
+                time.sleep(3)
+    return False
 
 
-def open_session(max_retries=3):
+# ═══════════════════════════════════════════════════════════════
+# OPEN SESSION — Retry قوي بـ 5 محاولات + Backoff
+# ═══════════════════════════════════════════════════════════════
+def open_session(max_retries=SESSION_RETRIES):
     url = BASE_URL + "/v1/sessions"
     headers = {"Authorization": "Bearer " + TICKERALL_API_KEY, "Content-Type": "application/json"}
     payload = {
@@ -169,7 +193,7 @@ def open_session(max_retries=3):
     for attempt in range(1, max_retries + 1):
         try:
             print("Session attempt " + str(attempt) + "/" + str(max_retries))
-            r = requests.post(url, headers=headers, json=payload, timeout=30)
+            r = requests.post(url, headers=headers, json=payload, timeout=SESSION_TIMEOUT)
             if r.status_code == 200:
                 account_id = r.json().get("accountId")
                 print("Session opened: " + str(account_id))
@@ -177,41 +201,58 @@ def open_session(max_retries=3):
             else:
                 print("Session failed: " + str(r.status_code) + " " + r.text[:200])
                 if attempt < max_retries:
-                    time.sleep(5)
+                    delay = BACKOFF_DELAYS[min(attempt - 1, len(BACKOFF_DELAYS) - 1)]
+                    print("Waiting " + str(delay) + "s before retry...")
+                    time.sleep(delay)
         except Exception as e:
-            print("Session error: " + str(e))
+            print("Session error attempt " + str(attempt) + ": " + str(e))
             if attempt < max_retries:
-                time.sleep(5)
+                delay = BACKOFF_DELAYS[min(attempt - 1, len(BACKOFF_DELAYS) - 1)]
+                print("Waiting " + str(delay) + "s before retry...")
+                time.sleep(delay)
     print("All session attempts failed")
     return None
 
 
+# ═══════════════════════════════════════════════════════════════
+# FETCH CANDLES — Retry 3x
+# ═══════════════════════════════════════════════════════════════
 def fetch_candles(account_id, symbol, timeframe, limit=500, hours=500, server_offset_hours=SERVER_OFFSET_HOURS):
     url = BASE_URL + "/v1/accounts/" + account_id + "/candles"
     headers = {"Authorization": "Bearer " + TICKERALL_API_KEY}
     params = {"symbol": symbol, "timeframe": timeframe, "limit": limit, "hours": hours}
-    try:
-        r = requests.get(url, headers=headers, params=params, timeout=90)
-        if r.status_code != 200:
-            print("Fail " + timeframe + ": " + str(r.status_code))
-            return None
-        data = r.json()
-        candles = data.get("candles", [])
-        if not candles:
-            print("No candles for " + timeframe)
-            return None
-        df = pd.DataFrame(candles)
-        df["datetime"] = pd.to_datetime(df["timestamp"], unit="s", utc=True) - pd.Timedelta(hours=server_offset_hours)
-        df = df[["datetime", "open", "high", "low", "close"]].copy()
-        for c in ["open", "high", "low", "close"]:
-            df[c] = pd.to_numeric(df[c])
-        df = df.sort_values("datetime").reset_index(drop=True)
-        print("OK " + timeframe + ": " + str(len(df)) + " candles | last: " + str(df.iloc[-1]['close']))
-        return df
-    except Exception as e:
-        print("Fetch " + timeframe + " Error: " + str(e))
-        traceback.print_exc()
-        return None
+    
+    for attempt in range(1, CANDLE_RETRIES + 1):
+        try:
+            print("Fetch " + timeframe + " attempt " + str(attempt) + "/" + str(CANDLE_RETRIES))
+            r = requests.get(url, headers=headers, params=params, timeout=CANDLE_TIMEOUT)
+            if r.status_code != 200:
+                print("Fail " + timeframe + ": " + str(r.status_code))
+                if attempt < CANDLE_RETRIES:
+                    time.sleep(3)
+                continue
+            data = r.json()
+            candles = data.get("candles", [])
+            if not candles:
+                print("No candles for " + timeframe)
+                if attempt < CANDLE_RETRIES:
+                    time.sleep(3)
+                continue
+            df = pd.DataFrame(candles)
+            df["datetime"] = pd.to_datetime(df["timestamp"], unit="s", utc=True) - pd.Timedelta(hours=server_offset_hours)
+            df = df[["datetime", "open", "high", "low", "close"]].copy()
+            for c in ["open", "high", "low", "close"]:
+                df[c] = pd.to_numeric(df[c])
+            df = df.sort_values("datetime").reset_index(drop=True)
+            print("OK " + timeframe + ": " + str(len(df)) + " candles | last: " + str(df.iloc[-1]['close']))
+            return df
+        except Exception as e:
+            print("Fetch " + timeframe + " attempt " + str(attempt) + " error: " + str(e))
+            if attempt < CANDLE_RETRIES:
+                time.sleep(3)
+    
+    print("All fetch attempts failed for " + timeframe)
+    return None
 
 
 def ta_atr(df, period=14):
@@ -324,7 +365,6 @@ def manage_trade(state, df_entry, now_utc):
     elapsed = (now_utc - entry_dt).total_seconds()
     bars_elapsed = elapsed / 1800
 
-    # TIME EXIT
     if bars_elapsed >= MAX_BARS_TRADE:
         acc_id = t.get("account_id", "")
         orders = t.get("orders", {})
@@ -355,7 +395,6 @@ def manage_trade(state, df_entry, now_utc):
         bt = row["datetime"]
         current_sl = t["sl"]
 
-        # SL HIT — only if TP1 not hit yet
         if not t["tp1_hit"]:
             sl_hit = False
             if d == "BUY":
@@ -378,7 +417,6 @@ def manage_trade(state, df_entry, now_utc):
                 )
                 return
 
-        # TP1 HIT — 50% closes, SL to BE for remaining
         if not t["tp1_hit"]:
             hit = (d == "BUY" and bh >= tp1) or (d == "SELL" and bl <= tp1)
             if hit:
@@ -404,7 +442,6 @@ def manage_trade(state, df_entry, now_utc):
                     "⏰ " + fmt_mosul(bt)
                 )
 
-        # TP2 HIT
         if t["tp1_hit"] and not t["tp2_hit"]:
             hit = (d == "BUY" and bh >= tp2) or (d == "SELL" and bl <= tp2)
             if hit:
@@ -419,7 +456,6 @@ def manage_trade(state, df_entry, now_utc):
                     "⏰ " + fmt_mosul(bt)
                 )
 
-        # TP3 HIT
         if t["tp2_hit"] and not t["tp3_hit"]:
             hit = (d == "BUY" and bh >= tp3) or (d == "SELL" and bl <= tp3)
             if hit:
@@ -776,7 +812,7 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
 
 def main():
     print("=" * 60)
-    print("ICT Gold Bot (XAUUSD! M30) — AUTO TRADE")
+    print("ICT Gold Bot (XAUUSD! M30) — AUTO TRADE + RETRY")
     print("=" * 60)
     try:
         state = load_state()
@@ -798,16 +834,17 @@ def main():
         print("Opening session...")
         account_id = open_session()
         if not account_id:
+            print("Cannot open session — will retry next run (5 min)")
             save_state(state)
             return
 
         print("Fetch M30...")
         df30 = fetch_candles(account_id, SYMBOL, TIMEFRAME_ENTRY, 500, 250)
         if df30 is None:
+            print("M30 data unavailable — will retry next run")
             save_state(state)
             return
 
-        # Active trade management
         if state["active_trade"] is not None:
             print("Managing active trade...")
             manage_trade(state, df30, now_utc)
@@ -824,6 +861,7 @@ def main():
         print("Fetch H1...")
         df1h = fetch_candles(account_id, SYMBOL, TIMEFRAME_TREND, 500, 500)
         if df1h is None:
+            print("H1 data unavailable — will retry next run")
             save_state(state)
             return
 
@@ -866,7 +904,6 @@ def main():
             "🕐 " + fmt_mosul(now_utc) + " (Baghdad)"
         )
 
-        # ═══ AUTO TRADE — 3 ORDERS ═══
         orders = {}
         if ENABLE_AUTO_TRADE:
             print("Executing 3 partial orders...")
@@ -906,7 +943,6 @@ def main():
         else:
             print("Auto-trade disabled — signal only")
 
-        # Save trade state
         state["active_trade"] = {
             **sig,
             "tp1_hit": False,
@@ -922,8 +958,13 @@ def main():
 
         save_state(state)
     except Exception as e:
-        print("Error: " + str(e))
+        print("FATAL Error: " + str(e))
         traceback.print_exc()
+        # Never crash — GitHub will retry next run in 5 min
+        try:
+            save_state(state)
+        except:
+            pass
 
 
 if __name__ == "__main__":
