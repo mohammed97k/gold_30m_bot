@@ -59,15 +59,27 @@ def fmt_mosul(dt_utc):
     return dt_utc.astimezone(MOSUL_TZ).strftime('%I:%M %p')
 
 
+# ═══════════════════════════════════════════════════════════════
+# TELEGRAM — مع 3 محاولات إعادة
+# ═══════════════════════════════════════════════════════════════
 def send_telegram(message):
     chat_ids = [c for c in [TELEGRAM_CHAT_ID, TELEGRAM_GROUP_CHAT_ID] if c]
     for chat_id in chat_ids:
         url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
-        try:
-            r = requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=15)
-            print("TG->" + str(chat_id) + ": ok=" + str(r.json().get('ok')))
-        except Exception as e:
-            print("TG Error: " + str(e))
+        for attempt in range(1, 4):
+            try:
+                r = requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=15)
+                if r.json().get('ok'):
+                    print("TG->" + str(chat_id) + ": ok=True")
+                    break
+                else:
+                    print("TG->" + str(chat_id) + ": attempt " + str(attempt) + " failed")
+                    if attempt < 3:
+                        time.sleep(3)
+            except Exception as e:
+                print("TG Error attempt " + str(attempt) + ": " + str(e))
+                if attempt < 3:
+                    time.sleep(3)
 
 
 def open_session(max_retries=3):
@@ -128,7 +140,9 @@ def fetch_candles(account_id, symbol, timeframe, limit=500, hours=500, server_of
 
 
 def ta_atr(df, period=14):
-    high = df["high"]; low = df["low"]; close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
     tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1.0/period, adjust=False).mean()
 
@@ -138,7 +152,8 @@ def ta_ema(series, length):
 
 
 def ta_pivothigh(highs, left, right):
-    n = len(highs); result = np.full(n, np.nan)
+    n = len(highs)
+    result = np.full(n, np.nan)
     for i in range(left, n - right):
         window = highs[i-left:i+right+1]
         if highs[i] == window.max() and (window == highs[i]).sum() == 1:
@@ -147,7 +162,8 @@ def ta_pivothigh(highs, left, right):
 
 
 def ta_pivotlow(lows, left, right):
-    n = len(lows); result = np.full(n, np.nan)
+    n = len(lows)
+    result = np.full(n, np.nan)
     for i in range(left, n - right):
         window = lows[i-left:i+right+1]
         if lows[i] == window.min() and (window == lows[i]).sum() == 1:
@@ -178,13 +194,31 @@ def session_flags(dt_ny):
     }
 
 
+# ═══════════════════════════════════════════════════════════════
+# STATE — مع حماية من التلف
+# ═══════════════════════════════════════════════════════════════
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
-            s = json.load(f)
+        try:
+            with open(STATE_FILE) as f:
+                s = json.load(f)
+            if "active_trade" not in s:
+                s["active_trade"] = None
+            if "trade_count_today" not in s:
+                s["trade_count_today"] = 0
+            if "models_done_today" not in s:
+                s["models_done_today"] = []
+            if "last_bar_time" not in s:
+                s["last_bar_time"] = None
+            if "last_day" not in s:
+                s["last_day"] = None
+            if "last_entry_time" not in s:
+                s["last_entry_time"] = None
             active = s.get('active_trade')
             print("State: active=" + ("YES" if active else "NO") + " | trades_today=" + str(s.get('trade_count_today', 0)))
             return s
+        except Exception as e:
+            print("State file corrupted, resetting: " + str(e))
     print("State new")
     return {
         "active_trade": None,
@@ -202,57 +236,130 @@ def save_state(s):
     print("State saved")
 
 
+# ═══════════════════════════════════════════════════════════════
+# TRADE MANAGEMENT — مع إيموجي لكل حدث
+# ═══════════════════════════════════════════════════════════════
 def manage_trade(state, df_entry, now_utc):
     t = state["active_trade"]
     if t is None:
         return
-    d = t["direction"]; e = t["entry"]
-    tp1 = t["tp1"]; tp2 = t["tp2"]; tp3 = t["tp3"]
+    d = t["direction"]
+    e = t["entry"]
+    tp1 = t["tp1"]
+    tp2 = t["tp2"]
+    tp3 = t["tp3"]
     entry_time_str = t.get("entry_time")
     if not entry_time_str:
         return
     entry_dt = datetime.fromisoformat(entry_time_str)
     elapsed = (now_utc - entry_dt).total_seconds()
     bars_elapsed = elapsed / 1800
+
+    # TIME EXIT
     if bars_elapsed >= MAX_BARS_TRADE:
         state["active_trade"] = None
-        send_telegram("Time Exit (60 bars)\nModel: " + str(t['model']) + "\nDir: " + d + "\nEntry: " + str(e) + "\nTime: " + fmt_mosul(now_utc))
+        send_telegram(
+            "⏱ TIME EXIT (60 bars)\n"
+            "━━━━━━━━━━━━━━━\n"
+            "Model: " + str(t['model']) + "\n"
+            "Dir: " + d + "\n"
+            "Entry: " + str(e) + "\n"
+            "Time: " + fmt_mosul(now_utc)
+        )
         return
+
     entry_dt_adj = entry_dt - pd.Timedelta(hours=SERVER_OFFSET_HOURS)
     bars_since = df_entry[df_entry["datetime"] >= entry_dt_adj].copy()
     if len(bars_since) == 0:
         return
+
     for idx, row in bars_since.iterrows():
-        bh = float(row["high"]); bl = float(row["low"]); bt = row["datetime"]
+        bh = float(row["high"])
+        bl = float(row["low"])
+        bt = row["datetime"]
         current_sl = t["sl"]
+
+        # SL HIT
         sl_hit = False
         if d == "BUY":
-            if bl <= current_sl: sl_hit = True
+            if bl <= current_sl:
+                sl_hit = True
         else:
-            if bh >= current_sl: sl_hit = True
+            if bh >= current_sl:
+                sl_hit = True
+
         if sl_hit:
             if t["tp1_hit"]:
-                send_telegram("SL after TP1 (BE)\nModel: " + str(t['model']) + "\nDir: " + d + "\nEntry: " + str(e) + "\nSL: " + str(current_sl) + "\nTime: " + fmt_mosul(bt))
+                send_telegram(
+                    "🟡 STOP (BE)\n"
+                    "━━━━━━━━━━━━━━━\n"
+                    "SL after TP1 (Breakeven)\n"
+                    "Model: " + str(t['model']) + "\n"
+                    "Dir: " + d + "\n"
+                    "Entry: " + str(e) + "\n"
+                    "SL: " + str(current_sl) + "\n"
+                    "Time: " + fmt_mosul(bt)
+                )
             else:
-                send_telegram("SL hit!\nModel: " + str(t['model']) + "\nDir: " + d + "\nEntry: " + str(e) + "\nSL: " + str(current_sl) + "\nTime: " + fmt_mosul(bt))
+                send_telegram(
+                    "🛑 STOP LOSS ❌\n"
+                    "━━━━━━━━━━━━━━━\n"
+                    "Model: " + str(t['model']) + "\n"
+                    "Dir: " + d + "\n"
+                    "Entry: " + str(e) + "\n"
+                    "SL: " + str(current_sl) + "\n"
+                    "Time: " + fmt_mosul(bt)
+                )
             state["active_trade"] = None
             return
+
+        # TP1
         if not t["tp1_hit"]:
             hit = (d == "BUY" and bh >= tp1) or (d == "SELL" and bl <= tp1)
             if hit:
                 t["tp1_hit"] = True
                 t["sl"] = e
-                send_telegram("TP1 hit!\nModel: " + str(t['model']) + "\nDir: " + d + "\nEntry: " + str(e) + "\nTP1: " + str(tp1) + "\nMove SL to BE: " + str(e) + "\nTime: " + fmt_mosul(bt))
+                send_telegram(
+                    "🎯 TP1 HIT!\n"
+                    "━━━━━━━━━━━━━━━\n"
+                    "Model: " + str(t['model']) + "\n"
+                    "Dir: " + d + "\n"
+                    "Entry: " + str(e) + "\n"
+                    "TP1: " + str(tp1) + "\n"
+                    "→ Move SL to BE: " + str(e) + "\n"
+                    "Time: " + fmt_mosul(bt)
+                )
+
+        # TP2
         if t["tp1_hit"] and not t["tp2_hit"]:
             hit = (d == "BUY" and bh >= tp2) or (d == "SELL" and bl <= tp2)
             if hit:
                 t["tp2_hit"] = True
-                send_telegram("TP2 hit!\nModel: " + str(t['model']) + "\nDir: " + d + "\nEntry: " + str(e) + "\nTP2: " + str(tp2) + "\nTime: " + fmt_mosul(bt))
+                send_telegram(
+                    "🎯🎯 TP2 HIT!\n"
+                    "━━━━━━━━━━━━━━━\n"
+                    "Model: " + str(t['model']) + "\n"
+                    "Dir: " + d + "\n"
+                    "Entry: " + str(e) + "\n"
+                    "TP2: " + str(tp2) + "\n"
+                    "Time: " + fmt_mosul(bt)
+                )
+
+        # TP3
         if t["tp2_hit"] and not t["tp3_hit"]:
             hit = (d == "BUY" and bh >= tp3) or (d == "SELL" and bl <= tp3)
             if hit:
                 t["tp3_hit"] = True
-                send_telegram("TP3 hit!\nModel: " + str(t['model']) + "\nDir: " + d + "\nEntry: " + str(e) + "\nTP3: " + str(tp3) + "\nTime: " + fmt_mosul(bt))
+                send_telegram(
+                    "🎯🎯🎯 TP3 HIT!\n"
+                    "━━━━━━━━━━━━━━━\n"
+                    "Model: " + str(t['model']) + "\n"
+                    "Dir: " + d + "\n"
+                    "Entry: " + str(e) + "\n"
+                    "TP3: " + str(tp3) + "\n"
+                    "★ TRADE COMPLETE ★\n"
+                    "Time: " + fmt_mosul(bt)
+                )
                 state["active_trade"] = None
                 return
 
@@ -262,14 +369,21 @@ def build_context(df):
     atr = ta_atr(df, ATR_PERIOD).values
     sh = ta_pivothigh(df["high"].values, PIVOT_LEFT, PIVOT_RIGHT)
     sl = ta_pivotlow(df["low"].values, PIVOT_LEFT, PIVOT_RIGHT)
-    last_sh = np.full(n, np.nan); last_sl = np.full(n, np.nan)
-    cur_sh = np.nan; cur_sl = np.nan
+    last_sh = np.full(n, np.nan)
+    last_sl = np.full(n, np.nan)
+    cur_sh = np.nan
+    cur_sl = np.nan
     for i in range(n):
-        if not np.isnan(sh[i]): cur_sh = sh[i]
-        if not np.isnan(sl[i]): cur_sl = sl[i]
-        last_sh[i] = cur_sh; last_sl[i] = cur_sl
+        if not np.isnan(sh[i]):
+            cur_sh = sh[i]
+        if not np.isnan(sl[i]):
+            cur_sl = sl[i]
+        last_sh[i] = cur_sh
+        last_sl[i] = cur_sl
 
-    low_a = df["low"].values; high_a = df["high"].values; close_a = df["close"].values
+    low_a = df["low"].values
+    high_a = df["high"].values
+    close_a = df["close"].values
     open_a = df["open"].values
 
     recent_low = ta_lowest(df["low"], SWEEP_LB).shift(1).values
@@ -277,58 +391,133 @@ def build_context(df):
     bull_sweep = (low_a < recent_low) & (close_a > recent_low)
     bear_sweep = (high_a > recent_high) & (close_a < recent_high)
 
-    bull_sweep_ok = np.zeros(n, dtype=bool); bull_sweep_low = np.full(n, np.nan)
-    bear_sweep_ok = np.zeros(n, dtype=bool); bear_sweep_high = np.full(n, np.nan)
-    cbok = False; cbbr = -1; cbbl = np.nan
-    cek = False; cebr = -1; cebh = np.nan
+    bull_sweep_ok = np.zeros(n, dtype=bool)
+    bull_sweep_low = np.full(n, np.nan)
+    bear_sweep_ok = np.zeros(n, dtype=bool)
+    bear_sweep_high = np.full(n, np.nan)
+    cbok = False
+    cbbr = -1
+    cbbl = np.nan
+    cek = False
+    cebr = -1
+    cebh = np.nan
     for i in range(n):
         if bull_sweep[i]:
-            cbok = True; cbbr = i; cbbl = low_a[i]
+            cbok = True
+            cbbr = i
+            cbbl = low_a[i]
         if bear_sweep[i]:
-            cek = True; cebr = i; cebh = high_a[i]
-        if cbok and (i - cbbr) > SWEEP_EXPIRY: cbok = False
-        if cek and (i - cebr) > SWEEP_EXPIRY: cek = False
-        bull_sweep_ok[i] = cbok; bull_sweep_low[i] = cbbl
-        bear_sweep_ok[i] = cek; bear_sweep_high[i] = cebh
+            cek = True
+            cebr = i
+            cebh = high_a[i]
+        if cbok and (i - cbbr) > SWEEP_EXPIRY:
+            cbok = False
+        if cek and (i - cebr) > SWEEP_EXPIRY:
+            cek = False
+        bull_sweep_ok[i] = cbok
+        bull_sweep_low[i] = cbbl
+        bear_sweep_ok[i] = cek
+        bear_sweep_high[i] = cebh
 
-    bull_mss = np.zeros(n, dtype=bool); bear_mss = np.zeros(n, dtype=bool)
-    cbm = False; cbmbar = -1; csm = False; csmbar = -1
+    bull_mss = np.zeros(n, dtype=bool)
+    bear_mss = np.zeros(n, dtype=bool)
+    cbm = False
+    cbmbar = -1
+    csm = False
+    csmbar = -1
     for i in range(1, n):
         if not np.isnan(last_sh[i]) and close_a[i] > last_sh[i] and close_a[i-1] <= last_sh[i] and bull_sweep_ok[i]:
-            cbm = True; cbmbar = i
+            cbm = True
+            cbmbar = i
         if not np.isnan(last_sl[i]) and close_a[i] < last_sl[i] and close_a[i-1] >= last_sl[i] and bear_sweep_ok[i]:
-            csm = True; csmbar = i
-        if cbm and (i - cbmbar) > MSS_EXPIRY: cbm = False
-        if csm and (i - csmbar) > MSS_EXPIRY: csm = False
-        bull_mss[i] = cbm; bear_mss[i] = csm
+            csm = True
+            csmbar = i
+        if cbm and (i - cbmbar) > MSS_EXPIRY:
+            cbm = False
+        if csm and (i - csmbar) > MSS_EXPIRY:
+            csm = False
+        bull_mss[i] = cbm
+        bear_mss[i] = csm
 
-    bTop = np.full(n, np.nan); bBot = np.full(n, np.nan); bActive = np.zeros(n, dtype=bool)
-    sTop = np.full(n, np.nan); sBot = np.full(n, np.nan); sActive = np.zeros(n, dtype=bool)
-    cbt = np.nan; cbb = np.nan; cbbar = -1; cbact = False
-    cst = np.nan; csb = np.nan; csbar = -1; csact = False
+    bTop = np.full(n, np.nan)
+    bBot = np.full(n, np.nan)
+    bActive = np.zeros(n, dtype=bool)
+    sTop = np.full(n, np.nan)
+    sBot = np.full(n, np.nan)
+    sActive = np.zeros(n, dtype=bool)
+    cbt = np.nan
+    cbb = np.nan
+    cbbar = -1
+    cbact = False
+    cst = np.nan
+    csb = np.nan
+    csbar = -1
+    csact = False
     for i in range(2, n):
         if low_a[i] > high_a[i-2]:
-            cbt = low_a[i]; cbb = high_a[i-2]; cbbar = i; cbact = True
+            cbt = low_a[i]
+            cbb = high_a[i-2]
+            cbbar = i
+            cbact = True
         if high_a[i] < low_a[i-2]:
-            cst = low_a[i-2]; csb = high_a[i]; csbar = i; csact = True
-        if cbact and (i - cbbar) > FVG_EXPIRY: cbact = False
-        if csact and (i - csbar) > FVG_EXPIRY: csact = False
-        bTop[i] = cbt; bBot[i] = cbb; bActive[i] = cbact
-        sTop[i] = cst; sBot[i] = csb; sActive[i] = csact
+            cst = low_a[i-2]
+            csb = high_a[i]
+            csbar = i
+            csact = True
+        if cbact and (i - cbbar) > FVG_EXPIRY:
+            cbact = False
+        if csact and (i - csbar) > FVG_EXPIRY:
+            csact = False
+        bTop[i] = cbt
+        bBot[i] = cbb
+        bActive[i] = cbact
+        sTop[i] = cst
+        sBot[i] = csb
+        sActive[i] = csact
 
-    bOBHigh = np.full(n, np.nan); bOBLow = np.full(n, np.nan); bOBMT = np.full(n, np.nan); bOBActive = np.zeros(n, dtype=bool)
-    sOBHigh = np.full(n, np.nan); sOBLow = np.full(n, np.nan); sOBMT = np.full(n, np.nan); sOBActive = np.zeros(n, dtype=bool)
-    cboH = np.nan; cboL = np.nan; cboMT = np.nan; cboBar = -1; cboAct = False
-    csoH = np.nan; csoL = np.nan; csoMT = np.nan; csoBar = -1; csoAct = False
+    bOBHigh = np.full(n, np.nan)
+    bOBLow = np.full(n, np.nan)
+    bOBMT = np.full(n, np.nan)
+    bOBActive = np.zeros(n, dtype=bool)
+    sOBHigh = np.full(n, np.nan)
+    sOBLow = np.full(n, np.nan)
+    sOBMT = np.full(n, np.nan)
+    sOBActive = np.zeros(n, dtype=bool)
+    cboH = np.nan
+    cboL = np.nan
+    cboMT = np.nan
+    cboBar = -1
+    cboAct = False
+    csoH = np.nan
+    csoL = np.nan
+    csoMT = np.nan
+    csoBar = -1
+    csoAct = False
     for i in range(1, n):
         if close_a[i] > open_a[i] and close_a[i-1] < open_a[i-1]:
-            cboH = high_a[i-1]; cboL = low_a[i-1]; cboMT = (open_a[i-1] + close_a[i-1]) / 2.0; cboBar = i-1; cboAct = True
+            cboH = high_a[i-1]
+            cboL = low_a[i-1]
+            cboMT = (open_a[i-1] + close_a[i-1]) / 2.0
+            cboBar = i-1
+            cboAct = True
         if close_a[i] < open_a[i] and close_a[i-1] > open_a[i-1]:
-            csoH = high_a[i-1]; csoL = low_a[i-1]; csoMT = (open_a[i-1] + close_a[i-1]) / 2.0; csoBar = i-1; csoAct = True
-        if cboAct and (i - cboBar) > OB_EXPIRY: cboAct = False
-        if csoAct and (i - csoBar) > OB_EXPIRY: csoAct = False
-        bOBHigh[i] = cboH; bOBLow[i] = cboL; bOBMT[i] = cboMT; bOBActive[i] = cboAct
-        sOBHigh[i] = csoH; sOBLow[i] = csoL; sOBMT[i] = csoMT; sOBActive[i] = csoAct
+            csoH = high_a[i-1]
+            csoL = low_a[i-1]
+            csoMT = (open_a[i-1] + close_a[i-1]) / 2.0
+            csoBar = i-1
+            csoAct = True
+        if cboAct and (i - cboBar) > OB_EXPIRY:
+            cboAct = False
+        if csoAct and (i - csoBar) > OB_EXPIRY:
+            csoAct = False
+        bOBHigh[i] = cboH
+        bOBLow[i] = cboL
+        bOBMT[i] = cboMT
+        bOBActive[i] = cboAct
+        sOBHigh[i] = csoH
+        sOBLow[i] = csoL
+        sOBMT[i] = csoMT
+        sOBActive[i] = csoAct
 
     midnightOpen = np.full(n, np.nan)
     df_ny = df["datetime"].dt.tz_convert(NY_TZ)
@@ -340,14 +529,29 @@ def build_context(df):
         midnightOpen[i] = cur_mo
 
     return {
-        "atr": atr, "last_sh": last_sh, "last_sl": last_sl,
-        "bull_sweep_ok": bull_sweep_ok, "bear_sweep_ok": bear_sweep_ok,
-        "bull_sweep_low": bull_sweep_low, "bear_sweep_high": bear_sweep_high,
-        "bull_mss": bull_mss, "bear_mss": bear_mss,
-        "bTop": bTop, "bBot": bBot, "bActive": bActive,
-        "sTop": sTop, "sBot": sBot, "sActive": sActive,
-        "bOBHigh": bOBHigh, "bOBLow": bOBLow, "bOBMT": bOBMT, "bOBActive": bOBActive,
-        "sOBHigh": sOBHigh, "sOBLow": sOBLow, "sOBMT": sOBMT, "sOBActive": sOBActive,
+        "atr": atr,
+        "last_sh": last_sh,
+        "last_sl": last_sl,
+        "bull_sweep_ok": bull_sweep_ok,
+        "bear_sweep_ok": bear_sweep_ok,
+        "bull_sweep_low": bull_sweep_low,
+        "bear_sweep_high": bear_sweep_high,
+        "bull_mss": bull_mss,
+        "bear_mss": bear_mss,
+        "bTop": bTop,
+        "bBot": bBot,
+        "bActive": bActive,
+        "sTop": sTop,
+        "sBot": sBot,
+        "sActive": sActive,
+        "bOBHigh": bOBHigh,
+        "bOBLow": bOBLow,
+        "bOBMT": bOBMT,
+        "bOBActive": bOBActive,
+        "sOBHigh": sOBHigh,
+        "sOBLow": sOBLow,
+        "sOBMT": sOBMT,
+        "sOBActive": sOBActive,
         "midnightOpen": midnightOpen,
     }
 
@@ -357,7 +561,8 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
         ctx = build_context(df30)
         i = len(df30) - 1
         atr = ctx["atr"][i]
-        if np.isnan(atr): return None
+        if np.isnan(atr):
+            return None
 
         df1h = df1h.copy()
         df1h["ema200"] = ta_ema(df1h["close"], 200)
@@ -399,32 +604,49 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
             if bars_since < cooldown:
                 return None
 
-        sigL = False; sigS = False; model = None
+        sigL = False
+        sigS = False
+        model = None
 
+        # Judas
         if sessions["Judas"] and bull_mss and ctx["bActive"][i] and trend_up:
-            sigL = True; model = "Judas"
+            sigL = True
+            model = "Judas"
         elif sessions["Judas"] and bear_mss and ctx["sActive"][i] and trend_down:
-            sigS = True; model = "Judas"
+            sigS = True
+            model = "Judas"
 
+        # 2022-AM
         if not sigL and not sigS and sessions["2022_AM"] and bull_mss and ctx["bActive"][i] and trend_up:
-            sigL = True; model = "2022-AM"
+            sigL = True
+            model = "2022-AM"
         elif not sigL and not sigS and sessions["2022_AM"] and bear_mss and ctx["sActive"][i] and trend_down:
-            sigS = True; model = "2022-AM"
+            sigS = True
+            model = "2022-AM"
 
+        # SB-PM
         if not sigL and not sigS and sessions["SB_PM"] and bull_mss and ctx["bActive"][i] and trend_up:
-            sigL = True; model = "SB-PM"
+            sigL = True
+            model = "SB-PM"
         elif not sigL and not sigS and sessions["SB_PM"] and bear_mss and ctx["sActive"][i] and trend_down:
-            sigS = True; model = "SB-PM"
+            sigS = True
+            model = "SB-PM"
 
+        # OB
         if not sigL and not sigS and sessions["Killzone"] and bOBActive and not np.isnan(bOBMT) and not np.isnan(bOBLow) and low <= bOBMT and low >= bOBLow and trend_up:
-            sigL = True; model = "OB"
+            sigL = True
+            model = "OB"
         elif not sigL and not sigS and sessions["Killzone"] and sOBActive and not np.isnan(sOBMT) and not np.isnan(sOBHigh) and high >= sOBMT and high <= sOBHigh and trend_down:
-            sigS = True; model = "OB"
+            sigS = True
+            model = "OB"
 
+        # FVG
         if not sigL and not sigS and sessions["Killzone"] and strong_bull and ctx["bActive"][i] and not np.isnan(bCe) and low <= bCe and close > bCe and close > bBot_:
-            sigL = True; model = "FVG"
+            sigL = True
+            model = "FVG"
         elif not sigL and not sigS and sessions["Killzone"] and strong_bear and ctx["sActive"][i] and not np.isnan(sCe) and high >= sCe and close < sCe and close < sTop_:
-            sigS = True; model = "FVG"
+            sigS = True
+            model = "FVG"
 
         if not sigL and not sigS:
             return None
@@ -468,9 +690,13 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
 
         print(direction + " " + model + " @ " + str(entry) + " | SL: " + str(round(sl_level, 2)) + " (" + str(round(sl_pts, 1)) + " pts)")
         return {
-            "model": model, "direction": direction,
-            "entry": round(entry, 2), "sl": round(sl_level, 2),
-            "tp1": round(tp1, 2), "tp2": round(tp2, 2), "tp3": round(tp3, 2),
+            "model": model,
+            "direction": direction,
+            "entry": round(entry, 2),
+            "sl": round(sl_level, 2),
+            "tp1": round(tp1, 2),
+            "tp2": round(tp2, 2),
+            "tp3": round(tp3, 2),
             "sl_pts": round(sl_pts, 1)
         }
     except Exception as e:
@@ -559,16 +785,19 @@ def main():
         state["last_entry_time"] = now_utc.isoformat()
         state["models_done_today"].append(sig["model"])
 
+        arrow = "🟢 BUY" if sig['direction'] == "BUY" else "🔴 SELL"
         send_telegram(
-            "New Signal!\n\n"
-            "Model: " + str(sig['model']) + "\n"
-            "Direction: " + str(sig['direction']) + "\n"
-            "Entry: " + str(sig['entry']) + "\n"
-            "Stop: " + str(sig['sl']) + " (" + str(sig['sl_pts']) + " pts)\n"
-            "TP1: " + str(sig['tp1']) + "\n"
-            "TP2: " + str(sig['tp2']) + "\n"
-            "TP3: " + str(sig['tp3']) + "\n\n"
-            "Time: " + fmt_mosul(now_utc) + " (Mosul)"
+            "🚨 NEW SIGNAL\n"
+            "━━━━━━━━━━━━━━━\n"
+            "📊 Model: " + str(sig['model']) + "\n"
+            "📈 Direction: " + arrow + "\n"
+            "💰 Entry: " + str(sig['entry']) + "\n"
+            "🛑 Stop: " + str(sig['sl']) + " (" + str(sig['sl_pts']) + " pts)\n"
+            "🎯 TP1: " + str(sig['tp1']) + "\n"
+            "🎯🎯 TP2: " + str(sig['tp2']) + "\n"
+            "🎯🎯🎯 TP3: " + str(sig['tp3']) + "\n"
+            "━━━━━━━━━━━━━━━\n"
+            "🕐 " + fmt_mosul(now_utc) + " (Baghdad)"
         )
 
         save_state(state)
