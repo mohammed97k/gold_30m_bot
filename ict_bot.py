@@ -1,9 +1,9 @@
 # ═══════════════════════════════════════════════════════════════
-# ICT Gold Strategy Bot — XAUUSD! (M30) — AUTO TRADE + RETRY
+# ICT Gold Strategy Bot — XAUUSD! (M30) — 55-MIN LOOP
 # Based on: ICT Gold v9.5.1 SELECTIVE
 # Models: Judas, 2022-AM, SB-PM, OB, FVG
 # Orders: TP1=50%, TP2=30%, TP3=20% | SL→BE after TP1
-# Features: Strong retry, Idempotency-Key, never crash
+# Features: Idempotency-Key, 5-min loop × 11 = 55 min per run
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -73,6 +73,10 @@ CANDLE_TIMEOUT = 30
 ORDER_TIMEOUT = 20
 BACKOFF_DELAYS = [2, 4, 6, 10, 15]
 
+# ── LOOP SETTINGS ──
+MAX_RUNTIME_SECONDS = 55 * 60
+LOOP_INTERVAL_SECONDS = 5 * 60
+
 
 def fmt_mosul(dt_utc):
     return dt_utc.astimezone(MOSUL_TZ).strftime('%I:%M %p')
@@ -102,7 +106,7 @@ def send_telegram(message):
 
 
 # ═══════════════════════════════════════════════════════════════
-# MT5 EXECUTION — مع Idempotency-Key + Retry
+# MT5 EXECUTION — مع Idempotency-Key
 # ═══════════════════════════════════════════════════════════════
 def place_order(account_id, symbol, direction, volume, sl, tp, tag=""):
     url = BASE_URL + "/v1/accounts/" + account_id + "/orders"
@@ -194,7 +198,7 @@ def close_position(account_id, order_id):
 
 
 # ═══════════════════════════════════════════════════════════════
-# OPEN SESSION — Retry 5x + Backoff
+# OPEN SESSION
 # ═══════════════════════════════════════════════════════════════
 def open_session(max_retries=SESSION_RETRIES):
     url = BASE_URL + "/v1/sessions"
@@ -230,7 +234,7 @@ def open_session(max_retries=SESSION_RETRIES):
 
 
 # ═══════════════════════════════════════════════════════════════
-# FETCH CANDLES — Retry 3x
+# FETCH CANDLES
 # ═══════════════════════════════════════════════════════════════
 def fetch_candles(account_id, symbol, timeframe, limit=500, hours=500, server_offset_hours=SERVER_OFFSET_HOURS):
     url = BASE_URL + "/v1/accounts/" + account_id + "/candles"
@@ -825,10 +829,8 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
         return None
 
 
-def main():
-    print("=" * 60)
-    print("ICT Gold Bot (XAUUSD! M30) — AUTO TRADE + RETRY")
-    print("=" * 60)
+def run_once():
+    """دورة واحدة كاملة — تُستدعى كل 5 دقائق"""
     try:
         state = load_state()
         now_utc = datetime.now(ZoneInfo("UTC"))
@@ -837,7 +839,7 @@ def main():
         if now_ny.weekday() >= 5:
             print("Weekend - disabled")
             save_state(state)
-            return
+            return "weekend"
 
         today = now_ny.date().isoformat()
         if state["last_day"] != today:
@@ -849,36 +851,36 @@ def main():
         print("Opening session...")
         account_id = open_session()
         if not account_id:
-            print("Cannot open session — will retry next run (5 min)")
+            print("Cannot open session")
             save_state(state)
-            return
+            return "no_session"
 
         print("Fetch M30...")
         df30 = fetch_candles(account_id, SYMBOL, TIMEFRAME_ENTRY, 500, 250)
         if df30 is None:
-            print("M30 data unavailable — will retry next run")
+            print("M30 data unavailable")
             save_state(state)
-            return
+            return "no_data"
 
         if state["active_trade"] is not None:
             print("Managing active trade...")
             manage_trade(state, df30, now_utc)
             save_state(state)
-            return
+            return "managed"
 
         last_bar_time = str(df30.iloc[-1]["datetime"])
         if state.get("last_bar_time") == last_bar_time:
             print("No new M30 bar since last check")
             save_state(state)
-            return
+            return "no_new_bar"
         state["last_bar_time"] = last_bar_time
 
         print("Fetch H1...")
         df1h = fetch_candles(account_id, SYMBOL, TIMEFRAME_TREND, 500, 500)
         if df1h is None:
-            print("H1 data unavailable — will retry next run")
+            print("H1 data unavailable")
             save_state(state)
-            return
+            return "no_h1"
 
         last_candle_time = df30.iloc[-1]["datetime"]
         minutes_old = (now_utc - last_candle_time).total_seconds() / 60
@@ -886,7 +888,7 @@ def main():
         if minutes_old > STALE_DATA_MINUTES:
             print("Data stale")
             save_state(state)
-            return
+            return "stale"
 
         print("Price: " + str(round(float(df30.iloc[-1]['close']), 2)) + " | NY: " + now_ny.strftime('%H:%M') + " | Mosul: " + fmt_mosul(now_utc))
 
@@ -895,12 +897,12 @@ def main():
         if sig is None:
             print("No signal")
             save_state(state)
-            return
+            return "no_signal"
 
         if sig["model"] in state["models_done_today"]:
             print("Model " + sig["model"] + " already used today")
             save_state(state)
-            return
+            return "duplicate"
 
         print("Signal found!")
 
@@ -972,13 +974,56 @@ def main():
         state["models_done_today"].append(sig["model"])
 
         save_state(state)
+        return "signal"
+
     except Exception as e:
-        print("FATAL Error: " + str(e))
+        print("Cycle Error: " + str(e))
         traceback.print_exc()
         try:
             save_state(state)
         except:
             pass
+        return "error"
+
+
+def main():
+    print("=" * 60)
+    print("ICT Gold Bot — 55-min loop (11 cycles × 5 min)")
+    print("=" * 60)
+    
+    start_time = time.time()
+    cycle = 0
+    
+    while True:
+        cycle += 1
+        elapsed = time.time() - start_time
+        
+        if elapsed >= MAX_RUNTIME_SECONDS:
+            print("")
+            print("=" * 60)
+            print("55 min reached. Total cycles: " + str(cycle - 1))
+            print("=" * 60)
+            break
+        
+        print("")
+        print("═" * 60)
+        print("Cycle " + str(cycle) + " | Elapsed: " + str(int(elapsed / 60)) + " min")
+        print("═" * 60)
+        
+        result = run_once()
+        print("Cycle " + str(cycle) + " result: " + result)
+        
+        # حساب وقت الانتظار
+        elapsed = time.time() - start_time
+        remaining = MAX_RUNTIME_SECONDS - elapsed
+        sleep_time = min(LOOP_INTERVAL_SECONDS, remaining)
+        
+        if sleep_time > 30:
+            print("Sleeping " + str(int(sleep_time)) + "s...")
+            time.sleep(sleep_time)
+        else:
+            print("Remaining time too short (" + str(int(sleep_time)) + "s), exiting loop")
+            break
 
 
 if __name__ == "__main__":
