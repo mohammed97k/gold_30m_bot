@@ -1,10 +1,8 @@
 {
   "active_trade": null,
-  "last_entry_time": "2026-10-12T15:34:16.749470+00:00",
-  "trade_count_today": 1,
-  "last_day": "2026-10-12",
-  "models_done_today": [
-    "OB"
-  ],
-  "last_bar_time": "2026-10-12 15:30:00+00:00"
+  "last_entry_time": null,
+  "trade_count_today": 0,
+  "last_day": null,
+  "models_done_today": [],
+  "last_bar_time": null
 }
