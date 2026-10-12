@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-# ICT Gold Strategy Bot — XAUUSD (M30)
+# ICT Gold Strategy Bot — XAUUSD# (M30)
 # Based on: ICT Gold v9.5.1 SELECTIVE
 # Models: Judas, 2022-AM, SB-PM, OB, FVG
 # ═══════════════════════════════════════════════════════════════
@@ -42,7 +42,7 @@ MAX_BARS_TRADE = 60
 TP1_R = 1.0
 TP2_R = 2.0
 TP3_R = 3.0
-SYMBOL = "XAUUSD"
+SYMBOL = "XAUUSD#"
 TIMEFRAME_ENTRY = "M30"
 TIMEFRAME_TREND = "H1"
 PIVOT_LEFT = 3
@@ -59,9 +59,6 @@ def fmt_mosul(dt_utc):
     return dt_utc.astimezone(MOSUL_TZ).strftime('%I:%M %p')
 
 
-# ═══════════════════════════════════════════════════════════════
-# TELEGRAM — مع 3 محاولات إعادة
-# ═══════════════════════════════════════════════════════════════
 def send_telegram(message):
     chat_ids = [c for c in [TELEGRAM_CHAT_ID, TELEGRAM_GROUP_CHAT_ID] if c]
     for chat_id in chat_ids:
@@ -194,9 +191,6 @@ def session_flags(dt_ny):
     }
 
 
-# ═══════════════════════════════════════════════════════════════
-# STATE — مع حماية من التلف
-# ═══════════════════════════════════════════════════════════════
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -236,9 +230,6 @@ def save_state(s):
     print("State saved")
 
 
-# ═══════════════════════════════════════════════════════════════
-# TRADE MANAGEMENT — مع إيموجي لكل حدث
-# ═══════════════════════════════════════════════════════════════
 def manage_trade(state, df_entry, now_utc):
     t = state["active_trade"]
     if t is None:
@@ -255,7 +246,6 @@ def manage_trade(state, df_entry, now_utc):
     elapsed = (now_utc - entry_dt).total_seconds()
     bars_elapsed = elapsed / 1800
 
-    # TIME EXIT
     if bars_elapsed >= MAX_BARS_TRADE:
         state["active_trade"] = None
         send_telegram(
@@ -279,7 +269,6 @@ def manage_trade(state, df_entry, now_utc):
         bt = row["datetime"]
         current_sl = t["sl"]
 
-        # SL HIT
         sl_hit = False
         if d == "BUY":
             if bl <= current_sl:
@@ -313,7 +302,6 @@ def manage_trade(state, df_entry, now_utc):
             state["active_trade"] = None
             return
 
-        # TP1
         if not t["tp1_hit"]:
             hit = (d == "BUY" and bh >= tp1) or (d == "SELL" and bl <= tp1)
             if hit:
@@ -330,7 +318,6 @@ def manage_trade(state, df_entry, now_utc):
                     "Time: " + fmt_mosul(bt)
                 )
 
-        # TP2
         if t["tp1_hit"] and not t["tp2_hit"]:
             hit = (d == "BUY" and bh >= tp2) or (d == "SELL" and bl <= tp2)
             if hit:
@@ -345,7 +332,6 @@ def manage_trade(state, df_entry, now_utc):
                     "Time: " + fmt_mosul(bt)
                 )
 
-        # TP3
         if t["tp2_hit"] and not t["tp3_hit"]:
             hit = (d == "BUY" and bh >= tp3) or (d == "SELL" and bl <= tp3)
             if hit:
@@ -608,7 +594,6 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
         sigS = False
         model = None
 
-        # Judas
         if sessions["Judas"] and bull_mss and ctx["bActive"][i] and trend_up:
             sigL = True
             model = "Judas"
@@ -616,7 +601,6 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
             sigS = True
             model = "Judas"
 
-        # 2022-AM
         if not sigL and not sigS and sessions["2022_AM"] and bull_mss and ctx["bActive"][i] and trend_up:
             sigL = True
             model = "2022-AM"
@@ -624,7 +608,6 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
             sigS = True
             model = "2022-AM"
 
-        # SB-PM
         if not sigL and not sigS and sessions["SB_PM"] and bull_mss and ctx["bActive"][i] and trend_up:
             sigL = True
             model = "SB-PM"
@@ -632,7 +615,6 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
             sigS = True
             model = "SB-PM"
 
-        # OB
         if not sigL and not sigS and sessions["Killzone"] and bOBActive and not np.isnan(bOBMT) and not np.isnan(bOBLow) and low <= bOBMT and low >= bOBLow and trend_up:
             sigL = True
             model = "OB"
@@ -640,7 +622,6 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
             sigS = True
             model = "OB"
 
-        # FVG
         if not sigL and not sigS and sessions["Killzone"] and strong_bull and ctx["bActive"][i] and not np.isnan(bCe) and low <= bCe and close > bCe and close > bBot_:
             sigL = True
             model = "FVG"
@@ -707,7 +688,7 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
 
 def main():
     print("=" * 60)
-    print("ICT Gold Bot (XAUUSD M30) — Start")
+    print("ICT Gold Bot (XAUUSD# M30) — Start")
     print("=" * 60)
     try:
         state = load_state()
