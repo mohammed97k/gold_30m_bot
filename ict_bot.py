@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-# ICT Gold Strategy Bot — XAUUSD# (M30)
+# ICT Gold Strategy Bot — XAUUSD! (M30)
 # Based on: ICT Gold v9.5.1 SELECTIVE
 # Models: Judas, 2022-AM, SB-PM, OB, FVG
 # ═══════════════════════════════════════════════════════════════
@@ -42,7 +42,7 @@ MAX_BARS_TRADE = 60
 TP1_R = 1.0
 TP2_R = 2.0
 TP3_R = 3.0
-SYMBOL = "XAUUSD#"
+SYMBOL = "XAUUSD!"
 TIMEFRAME_ENTRY = "M30"
 TIMEFRAME_TREND = "H1"
 PIVOT_LEFT = 3
@@ -688,7 +688,7 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
 
 def main():
     print("=" * 60)
-    print("ICT Gold Bot (XAUUSD# M30) — Start")
+    print("ICT Gold Bot (XAUUSD! M30) — Start")
     print("=" * 60)
     try:
         state = load_state()
