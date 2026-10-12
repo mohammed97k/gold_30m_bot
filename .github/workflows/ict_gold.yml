@@ -15,6 +15,7 @@ permissions:
 jobs:
   run-strategy:
     runs-on: ubuntu-latest
+    timeout-minutes: 4
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -42,6 +43,7 @@ jobs:
         run: python -u ict_bot.py
 
       - name: Commit state file
+        if: always()
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
