@@ -1,9 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
-# ICT Gold Strategy Bot — XAUUSD! (M30) — 55-MIN LOOP
-# Based on: ICT Gold v9.5.1 SELECTIVE
+# ICT Gold Strategy Bot — XAUUSD! (M30)
+# Self-Dispatch: يستدعي نفسه لضمان الاستمرارية
 # Models: Judas, 2022-AM, SB-PM, OB, FVG
-# Orders: TP1=50%, TP2=30%, TP3=20% | SL→BE after TP1
-# Features: Idempotency-Key, 5-min loop × 11 = 55 min per run
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -25,6 +23,12 @@ TELEGRAM_GROUP_CHAT_ID = os.environ.get("TELEGRAM_GROUP_CHAT_ID")
 MT5_PASSWORD = os.environ.get("MT5_PASSWORD")
 MT5_SERVER = os.environ.get("MT5_SERVER")
 MT5_ACCOUNT = os.environ.get("MT5_ACCOUNT")
+GH_PAT = os.environ.get("GH_PAT")
+
+# ── GITHUB SELF-DISPATCH ──
+GH_REPO_OWNER = "mohammed97k"
+GH_REPO_NAME = "gold_30m_bot"
+GH_WORKFLOW_FILE = "ict_gold.yml"
 
 # ── CONFIG ──
 STATE_FILE = "state.json"
@@ -106,7 +110,44 @@ def send_telegram(message):
 
 
 # ═══════════════════════════════════════════════════════════════
-# MT5 EXECUTION — مع Idempotency-Key
+# GITHUB SELF-DISPATCH
+# ═══════════════════════════════════════════════════════════════
+def dispatch_next_run():
+    """يستدعي GitHub Actions لتشغيل نسخة جديدة من البوت"""
+    if not GH_PAT:
+        print("⚠️ GH_PAT not set — cannot self-dispatch")
+        return False
+
+    url = "https://api.github.com/repos/" + GH_REPO_OWNER + "/" + GH_REPO_NAME + "/actions/workflows/" + GH_WORKFLOW_FILE + "/dispatches"
+    headers = {
+        "Authorization": "token " + GH_PAT,
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+    }
+    payload = {"ref": "main"}
+
+    for attempt in range(1, 4):
+        try:
+            print("Dispatch attempt " + str(attempt) + "/3...")
+            r = requests.post(url, headers=headers, json=payload, timeout=20)
+            if r.status_code in [200, 201, 204]:
+                print("✅ Next run dispatched successfully")
+                return True
+            else:
+                print("❌ Dispatch failed: " + str(r.status_code) + " | " + r.text[:200])
+                if attempt < 3:
+                    time.sleep(5)
+        except Exception as e:
+            print("❌ Dispatch error attempt " + str(attempt) + ": " + str(e))
+            if attempt < 3:
+                time.sleep(5)
+
+    print("❌ All dispatch attempts failed")
+    return False
+
+
+# ═══════════════════════════════════════════════════════════════
+# MT5 EXECUTION
 # ═══════════════════════════════════════════════════════════════
 def place_order(account_id, symbol, direction, volume, sl, tp, tag=""):
     url = BASE_URL + "/v1/accounts/" + account_id + "/orders"
@@ -197,9 +238,6 @@ def close_position(account_id, order_id):
     return False
 
 
-# ═══════════════════════════════════════════════════════════════
-# OPEN SESSION
-# ═══════════════════════════════════════════════════════════════
 def open_session(max_retries=SESSION_RETRIES):
     url = BASE_URL + "/v1/sessions"
     headers = {"Authorization": "Bearer " + TICKERALL_API_KEY, "Content-Type": "application/json"}
@@ -233,9 +271,6 @@ def open_session(max_retries=SESSION_RETRIES):
     return None
 
 
-# ═══════════════════════════════════════════════════════════════
-# FETCH CANDLES
-# ═══════════════════════════════════════════════════════════════
 def fetch_candles(account_id, symbol, timeframe, limit=500, hours=500, server_offset_hours=SERVER_OFFSET_HOURS):
     url = BASE_URL + "/v1/accounts/" + account_id + "/candles"
     headers = {"Authorization": "Bearer " + TICKERALL_API_KEY}
@@ -988,7 +1023,7 @@ def run_once():
 
 def main():
     print("=" * 60)
-    print("ICT Gold Bot — 55-min loop (11 cycles × 5 min)")
+    print("ICT Gold Bot — Self-Dispatch Mode")
     print("=" * 60)
     
     start_time = time.time()
@@ -1013,7 +1048,6 @@ def main():
         result = run_once()
         print("Cycle " + str(cycle) + " result: " + result)
         
-        # حساب وقت الانتظار
         elapsed = time.time() - start_time
         remaining = MAX_RUNTIME_SECONDS - elapsed
         sleep_time = min(LOOP_INTERVAL_SECONDS, remaining)
@@ -1024,6 +1058,13 @@ def main():
         else:
             print("Remaining time too short (" + str(int(sleep_time)) + "s), exiting loop")
             break
+    
+    # ═══ SELF-DISPATCH: استدعاء التشغيلة التالية ═══
+    print("")
+    print("=" * 60)
+    print("Dispatching next run...")
+    print("=" * 60)
+    dispatch_next_run()
 
 
 if __name__ == "__main__":
