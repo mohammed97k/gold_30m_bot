@@ -1,8 +1,10 @@
 {
   "active_trade": null,
-  "last_entry_time": "2026-10-12T16:08:06.599617+00:00",
-  "trade_count_today": 0,
+  "last_entry_time": "2026-10-14T16:50:59.403394+00:00",
+  "trade_count_today": 1,
   "last_day": "2026-10-14",
-  "models_done_today": [],
-  "last_bar_time": "2026-10-14 12:00:00+00:00"
+  "models_done_today": [
+    "FVG"
+  ],
+  "last_bar_time": "2026-10-14 17:30:00+00:00"
 }
