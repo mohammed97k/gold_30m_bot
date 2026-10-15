@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
 # ICT Gold Strategy Bot — XAUUSD! (M30)
-# Self-Dispatch: يستدعي نفسه لضمان الاستمرارية
 # Models: Judas, 2022-AM, SB-PM, OB, FVG
+# Fix: Timezone correction in manage_trade (bt)
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -113,11 +113,9 @@ def send_telegram(message):
 # GITHUB SELF-DISPATCH
 # ═══════════════════════════════════════════════════════════════
 def dispatch_next_run():
-    """يستدعي GitHub Actions لتشغيل نسخة جديدة من البوت"""
     if not GH_PAT:
-        print("⚠️ GH_PAT not set — cannot self-dispatch")
+        print("GH_PAT not set — cannot self-dispatch")
         return False
-
     url = "https://api.github.com/repos/" + GH_REPO_OWNER + "/" + GH_REPO_NAME + "/actions/workflows/" + GH_WORKFLOW_FILE + "/dispatches"
     headers = {
         "Authorization": "token " + GH_PAT,
@@ -125,24 +123,22 @@ def dispatch_next_run():
         "Content-Type": "application/json",
     }
     payload = {"ref": "main"}
-
     for attempt in range(1, 4):
         try:
             print("Dispatch attempt " + str(attempt) + "/3...")
             r = requests.post(url, headers=headers, json=payload, timeout=20)
             if r.status_code in [200, 201, 204]:
-                print("✅ Next run dispatched successfully")
+                print("Next run dispatched successfully")
                 return True
             else:
-                print("❌ Dispatch failed: " + str(r.status_code) + " | " + r.text[:200])
+                print("Dispatch failed: " + str(r.status_code) + " | " + r.text[:200])
                 if attempt < 3:
                     time.sleep(5)
         except Exception as e:
-            print("❌ Dispatch error attempt " + str(attempt) + ": " + str(e))
+            print("Dispatch error attempt " + str(attempt) + ": " + str(e))
             if attempt < 3:
                 time.sleep(5)
-
-    print("❌ All dispatch attempts failed")
+    print("All dispatch attempts failed")
     return False
 
 
@@ -428,7 +424,7 @@ def manage_trade(state, df_entry, now_utc):
                 close_position(acc_id, oid)
         state["active_trade"] = None
         send_telegram(
-            "⏱ TIME EXIT (60 bars)\n"
+            "TIME EXIT (60 bars)\n"
             "━━━━━━━━━━━━━━━\n"
             "Model: " + str(t['model']) + "\n"
             "Dir: " + d + "\n"
@@ -446,7 +442,9 @@ def manage_trade(state, df_entry, now_utc):
     for idx, row in bars_since.iterrows():
         bh = float(row["high"])
         bl = float(row["low"])
-        bt = row["datetime"]
+        # ═══ FIX: إرجاع 3 ساعات للوقت الصحيح ═══
+        bt = row["datetime"] + pd.Timedelta(hours=SERVER_OFFSET_HOURS)
+        # ═══════════════════════════════════════════
         current_sl = t["sl"]
 
         if not t["tp1_hit"]:
@@ -460,7 +458,7 @@ def manage_trade(state, df_entry, now_utc):
             if sl_hit:
                 state["active_trade"] = None
                 send_telegram(
-                    "🛑 STOP LOSS ❌\n"
+                    "STOP LOSS\n"
                     "━━━━━━━━━━━━━━━\n"
                     "Model: " + str(t['model']) + "\n"
                     "Dir: " + d + "\n"
@@ -485,7 +483,7 @@ def manage_trade(state, df_entry, now_utc):
                         if modify_sl(acc_id, oid, e):
                             updated += 1
                 send_telegram(
-                    "🎯 TP1 HIT! (50% closed)\n"
+                    "TP1 HIT (50% closed)\n"
                     "━━━━━━━━━━━━━━━\n"
                     "Model: " + str(t['model']) + "\n"
                     "Dir: " + d + "\n"
@@ -501,7 +499,7 @@ def manage_trade(state, df_entry, now_utc):
             if hit:
                 t["tp2_hit"] = True
                 send_telegram(
-                    "🎯🎯 TP2 HIT! (30% closed)\n"
+                    "TP2 HIT (30% closed)\n"
                     "━━━━━━━━━━━━━━━\n"
                     "Model: " + str(t['model']) + "\n"
                     "Dir: " + d + "\n"
@@ -515,13 +513,13 @@ def manage_trade(state, df_entry, now_utc):
             if hit:
                 t["tp3_hit"] = True
                 send_telegram(
-                    "🎯🎯🎯 TP3 HIT! (100% closed)\n"
+                    "TP3 HIT (100% closed)\n"
                     "━━━━━━━━━━━━━━━\n"
                     "Model: " + str(t['model']) + "\n"
                     "Dir: " + d + "\n"
                     "Entry: " + str(e) + "\n"
                     "TP3: " + str(tp3) + "\n"
-                    "★ TRADE COMPLETE ★\n"
+                    "TRADE COMPLETE\n"
                     "⏰ " + fmt_mosul(bt)
                 )
                 state["active_trade"] = None
@@ -865,7 +863,6 @@ def check_signal(df30, df1h, state, now_utc, now_ny):
 
 
 def run_once():
-    """دورة واحدة كاملة — تُستدعى كل 5 دقائق"""
     try:
         state = load_state()
         now_utc = datetime.now(ZoneInfo("UTC"))
@@ -941,19 +938,19 @@ def run_once():
 
         print("Signal found!")
 
-        arrow = "🟢 BUY" if sig['direction'] == "BUY" else "🔴 SELL"
+        arrow = "BUY" if sig['direction'] == "BUY" else "SELL"
         send_telegram(
-            "🚨 NEW SIGNAL\n"
+            "NEW SIGNAL\n"
             "━━━━━━━━━━━━━━━\n"
-            "📊 Model: " + str(sig['model']) + "\n"
-            "📈 Direction: " + arrow + "\n"
-            "💰 Entry: " + str(sig['entry']) + "\n"
-            "🛑 Stop: " + str(sig['sl']) + " (" + str(sig['sl_pts']) + " pts)\n"
-            "🎯 TP1: " + str(sig['tp1']) + "\n"
-            "🎯🎯 TP2: " + str(sig['tp2']) + "\n"
-            "🎯🎯🎯 TP3: " + str(sig['tp3']) + "\n"
+            "Model: " + str(sig['model']) + "\n"
+            "Direction: " + arrow + "\n"
+            "Entry: " + str(sig['entry']) + "\n"
+            "Stop: " + str(sig['sl']) + " (" + str(sig['sl_pts']) + " pts)\n"
+            "TP1: " + str(sig['tp1']) + "\n"
+            "TP2: " + str(sig['tp2']) + "\n"
+            "TP3: " + str(sig['tp3']) + "\n"
             "━━━━━━━━━━━━━━━\n"
-            "🕐 " + fmt_mosul(now_utc) + " (Baghdad)"
+            "Time: " + fmt_mosul(now_utc) + " (Baghdad)"
         )
 
         orders = {}
@@ -976,21 +973,21 @@ def run_once():
 
             if success_count >= 1:
                 send_telegram(
-                    "✅ ORDERS EXECUTED\n"
+                    "ORDERS EXECUTED\n"
                     "━━━━━━━━━━━━━━━\n"
                     "Total: " + str(success_count) + "/3 orders\n"
                     "• TP1: " + str(LOT_TP1) + " lot\n"
                     "• TP2: " + str(LOT_TP2) + " lot\n"
                     "• TP3: " + str(LOT_TP3) + " lot\n"
                     "Symbol: " + SYMBOL + "\n"
-                    "🕐 " + fmt_mosul(now_utc)
+                    "Time: " + fmt_mosul(now_utc)
                 )
             else:
                 send_telegram(
-                    "❌ ALL ORDERS FAILED\n"
+                    "ALL ORDERS FAILED\n"
                     "━━━━━━━━━━━━━━━\n"
                     "Signal sent but no execution\n"
-                    "🕐 " + fmt_mosul(now_utc)
+                    "Time: " + fmt_mosul(now_utc)
                 )
         else:
             print("Auto-trade disabled — signal only")
@@ -1041,9 +1038,9 @@ def main():
             break
         
         print("")
-        print("═" * 60)
+        print("=" * 60)
         print("Cycle " + str(cycle) + " | Elapsed: " + str(int(elapsed / 60)) + " min")
-        print("═" * 60)
+        print("=" * 60)
         
         result = run_once()
         print("Cycle " + str(cycle) + " result: " + result)
@@ -1059,7 +1056,6 @@ def main():
             print("Remaining time too short (" + str(int(sleep_time)) + "s), exiting loop")
             break
     
-    # ═══ SELF-DISPATCH: استدعاء التشغيلة التالية ═══
     print("")
     print("=" * 60)
     print("Dispatching next run...")
