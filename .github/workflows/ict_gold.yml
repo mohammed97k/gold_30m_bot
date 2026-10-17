@@ -2,7 +2,7 @@ name: ICT Gold Signals Bot
 
 on:
   schedule:
-    - cron: '0 */2 * * 1-5'
+    - cron: '*/15 * * * 1-5'
   workflow_dispatch:
 
 concurrency:
