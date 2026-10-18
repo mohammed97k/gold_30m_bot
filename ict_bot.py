@@ -6,6 +6,7 @@
 #   - Sessions evaluated on the CANDLE time (NY), not on "now"
 #   - Closed candles only, every missed candle is re-processed
 #   - Same daily/cooldown/model-once rules as Pine
+#   - BE stop enforced after TP1, realized points like Pine labels
 # ═══════════════════════════════════════════════════════════════
 
 import os
@@ -54,6 +55,8 @@ MAX_PENDING_BARS = 30
 TP1_R = 1.0
 TP2_R = 2.0
 TP3_R = 3.0
+TP1_CLOSE = 0.5            # share closed at TP1 (same as Pine input "TP1 close %")
+TP2_CLOSE = 0.3            # share closed at TP2 (same as Pine input "TP2 close %"); rest closes at TP3
 SYMBOL = "XAUUSD!"
 TIMEFRAME_ENTRY = "M30"
 TIMEFRAME_TREND = "H1"
@@ -69,6 +72,7 @@ SWEEP_EXPIRY = 20
 EXEC_MAX_AGE_MIN = 25      # orders are executed only if the signal candle closed less than this many minutes ago
 MAX_CHASE_R = 0.3          # skip market execution if price is farther than 0.3R from the Pine entry
 BOOT_BARS = 2              # when state.json is missing: re-check only the last N closed candles
+ENFORCE_BE = True          # Pine: stop moves to break-even after TP1 and is enforced
 
 # ── AUTO TRADE ──
 ENABLE_AUTO_TRADE = False
@@ -517,6 +521,8 @@ def simulate(df, trend):
     a_tp3_hit = False
     a_entry_bar = -1
     a_model = ""
+    a_pts = 0.0
+    a_rem = 1.0
 
     def pend_dict():
         return {
@@ -540,6 +546,7 @@ def simulate(df, trend):
             "tp2": round(float(a_tp2), 2),
             "tp3": round(float(a_tp3), 2),
             "sl_pts": round(float(a_risk), 1),
+            "pts": round(float(a_pts), 1),
         }
 
     for i in range(n):
@@ -750,6 +757,8 @@ def simulate(df, trend):
             a_tp3_hit = False
             a_closed = False
             a_on = True
+            a_pts = 0.0
+            a_rem = 1.0
             a_entry_bar = i
             a_model = p_model
             trade_count += 1
@@ -777,6 +786,8 @@ def simulate(df, trend):
             a_tp3_hit = False
             a_closed = False
             a_on = True
+            a_pts = 0.0
+            a_rem = 1.0
             a_entry_bar = i
             a_model = p_model
             trade_count += 1
@@ -792,53 +803,90 @@ def simulate(df, trend):
 
         # ── management ──
         can_check = a_on and (not a_closed) and i > a_entry_bar
+        tp_this_bar = False
 
         if can_check and (i - a_entry_bar) >= MAX_BARS_TRADE:
             a_closed = True
             a_on = False
             flat_from = i + 1
             fpts = (c[i] - a_entry) * MULT if a_is_long else (a_entry - c[i]) * MULT
-            events.append({"type": "time", "i": i, "pts": round(float(fpts), 1), **act_dict()})
+            a_pts += a_rem * fpts
+            a_rem = 0.0
+            events.append({"type": "time", "i": i, **act_dict()})
 
         if can_check and a_is_long and (not a_closed):
             if (not a_tp1_hit) and h[i] >= a_tp1:
                 a_tp1_hit = True
-                events.append({"type": "tp1", "i": i, **act_dict()})
+                tp_this_bar = True
+                a_pts += TP1_CLOSE * abs(a_tp1 - a_entry) * MULT
+                a_rem -= TP1_CLOSE
                 a_sl = a_entry
+                events.append({"type": "tp1", "i": i, **act_dict()})
             if (not a_tp2_hit) and a_tp1_hit and h[i] >= a_tp2:
                 a_tp2_hit = True
+                tp_this_bar = True
+                a_pts += TP2_CLOSE * abs(a_tp2 - a_entry) * MULT
+                a_rem -= TP2_CLOSE
                 events.append({"type": "tp2", "i": i, **act_dict()})
             if (not a_tp3_hit) and a_tp2_hit and h[i] >= a_tp3:
                 a_tp3_hit = True
+                tp_this_bar = True
                 a_closed = True
                 a_on = False
                 flat_from = i + 1
+                a_pts += a_rem * abs(a_tp3 - a_entry) * MULT
+                a_rem = 0.0
                 events.append({"type": "tp3", "i": i, **act_dict()})
             if (not a_tp1_hit) and l[i] <= a_sl:
                 a_closed = True
                 a_on = False
                 flat_from = i + 1
+                a_pts -= a_rem * a_risk
+                a_rem = 0.0
                 events.append({"type": "sl", "i": i, **act_dict()})
+            if ENFORCE_BE and a_tp1_hit and (not a_closed) and (not tp_this_bar) and l[i] <= a_sl:
+                a_closed = True
+                a_on = False
+                flat_from = i + 1
+                a_rem = 0.0
+                events.append({"type": "be", "i": i, **act_dict()})
 
         if can_check and (not a_is_long) and (not a_closed):
             if (not a_tp1_hit) and l[i] <= a_tp1:
                 a_tp1_hit = True
-                events.append({"type": "tp1", "i": i, **act_dict()})
+                tp_this_bar = True
+                a_pts += TP1_CLOSE * abs(a_entry - a_tp1) * MULT
+                a_rem -= TP1_CLOSE
                 a_sl = a_entry
+                events.append({"type": "tp1", "i": i, **act_dict()})
             if (not a_tp2_hit) and a_tp1_hit and l[i] <= a_tp2:
                 a_tp2_hit = True
+                tp_this_bar = True
+                a_pts += TP2_CLOSE * abs(a_entry - a_tp2) * MULT
+                a_rem -= TP2_CLOSE
                 events.append({"type": "tp2", "i": i, **act_dict()})
             if (not a_tp3_hit) and a_tp2_hit and l[i] <= a_tp3:
                 a_tp3_hit = True
+                tp_this_bar = True
                 a_closed = True
                 a_on = False
                 flat_from = i + 1
+                a_pts += a_rem * abs(a_entry - a_tp3) * MULT
+                a_rem = 0.0
                 events.append({"type": "tp3", "i": i, **act_dict()})
             if (not a_tp1_hit) and h[i] >= a_sl:
                 a_closed = True
                 a_on = False
                 flat_from = i + 1
+                a_pts -= a_rem * a_risk
+                a_rem = 0.0
                 events.append({"type": "sl", "i": i, **act_dict()})
+            if ENFORCE_BE and a_tp1_hit and (not a_closed) and (not tp_this_bar) and h[i] >= a_sl:
+                a_closed = True
+                a_on = False
+                flat_from = i + 1
+                a_rem = 0.0
+                events.append({"type": "be", "i": i, **act_dict()})
 
     return events
 
@@ -982,6 +1030,7 @@ def process_events(events, df30, state, account_id, now_utc):
                 "TP1 HIT (50% closed)\n"
                 "━━━━━━━━━━━━━━━\n" + head +
                 "TP1: " + str(ev['tp1']) + "\n"
+                "Realized: +" + str(ev['pts']) + " pts\n"
                 "→ SL to BE: " + str(ev['entry']) + "\n"
                 "→ Updated " + str(updated) + "/2 remaining\n"
                 "⏰ " + tstr + late_tag
@@ -992,6 +1041,7 @@ def process_events(events, df30, state, account_id, now_utc):
                 "TP2 HIT (30% closed)\n"
                 "━━━━━━━━━━━━━━━\n" + head +
                 "TP2: " + str(ev['tp2']) + "\n"
+                "Realized: +" + str(ev['pts']) + " pts\n"
                 "⏰ " + tstr + late_tag
             )
 
@@ -1000,6 +1050,7 @@ def process_events(events, df30, state, account_id, now_utc):
                 "TP3 HIT (100% closed)\n"
                 "━━━━━━━━━━━━━━━\n" + head +
                 "TP3: " + str(ev['tp3']) + "\n"
+                "Realized: +" + str(ev['pts']) + " pts\n"
                 "TRADE COMPLETE\n"
                 "⏰ " + tstr + late_tag
             )
@@ -1010,7 +1061,18 @@ def process_events(events, df30, state, account_id, now_utc):
                 "STOP LOSS\n"
                 "━━━━━━━━━━━━━━━\n" + head +
                 "SL: " + str(ev['sl']) + "\n"
+                "Realized: " + str(ev['pts']) + " pts\n"
                 "→ All orders closed\n"
+                "⏰ " + tstr + late_tag
+            )
+            state["active_trade"] = None
+
+        elif etype == "be":
+            send_telegram(
+                "BREAK-EVEN EXIT\n"
+                "━━━━━━━━━━━━━━━\n" + head +
+                "Realized: " + str(ev['pts']) + " pts\n"
+                "→ Remaining closed at BE\n"
                 "⏰ " + tstr + late_tag
             )
             state["active_trade"] = None
@@ -1025,7 +1087,7 @@ def process_events(events, df30, state, account_id, now_utc):
             send_telegram(
                 "TIME EXIT (60 bars)\n"
                 "━━━━━━━━━━━━━━━\n" + head +
-                "Points: " + str(ev['pts']) + "\n"
+                "Realized: " + str(ev['pts']) + " pts\n"
                 "→ All positions closed\n"
                 "⏰ " + tstr + late_tag
             )
