@@ -1,16 +1,10 @@
 {
-  "active_trade": {
-    "model": "OB",
-    "direction": "SELL",
-    "entry": 4054.61,
-    "orders": {},
-    "account_id": "cmv5ec8or00n2qo01x1xd17z4"
-  },
+  "active_trade": null,
   "last_entry_time": "2026-10-16T15:31:11.464083+00:00",
   "trade_count_today": 1,
   "last_day": "2026-10-16",
   "models_done_today": [
     "OB"
   ],
-  "last_bar_time": "2026-10-23T00:00:00+00:00"
+  "last_bar_time": "2026-10-23T02:00:00+00:00"
 }
