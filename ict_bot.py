@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
 # ICT Gold v15 REAL-TIME BOT
-# ✨ حلول التأخير:
+#  حلول التأخير:
 #   - فحص كل 30 ثانية (بدلاً من 5 دقائق)
 #   - جلب الشمعة الحية + المغلقة
 #   - aiohttp للسرعة القصوى
@@ -19,6 +19,9 @@ TICKERALL_API_KEY = os.environ.get("TICKERALL_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 TELEGRAM_GROUP_CHAT_ID = os.environ.get("TELEGRAM_GROUP_CHAT_ID")
+MT5_SERVER = os.environ.get("MT5_SERVER")
+MT5_ACCOUNT = os.environ.get("MT5_ACCOUNT")
+MT5_PASSWORD = os.environ.get("MT5_PASSWORD")
 GH_PAT = os.environ.get("GH_PAT")
 
 GH_OWNER = "mohammed97k"
@@ -31,32 +34,29 @@ SYMBOL = "XAUUSD!"
 NY_TZ = ZoneInfo("America/New_York")
 MOSUL_TZ = ZoneInfo("Asia/Baghdad")
 
-# ═══ STRATEGY PARAMS (مطابق لـ v14 FINAL-PRO) ═══
+# ═══ STRATEGY PARAMS ═══
 MULT = 10.0
 ATR_PERIOD = 14
 MIN_SL_PTS = 40.0
-MAX_SL_PTS = 130.0       # ⬅️ محدّث من 150 إلى 130
-SL_BUF_PTS = 10.0        # ️ بافر الأمان
+MAX_SL_PTS = 130.0
+SL_BUF_PTS = 10.0
 COOLDOWN = 10
 MAX_BARS_TRADE = 60
-TP1_PTS = 100.0          # ⬅️ أهداف ثابتة
+TP1_PTS = 100.0
 TP2_PTS = 150.0
 TP3_PTS = 200.0
 CHOP_MULT = 0.9
-USE_INV = True           # PD Delivery Failure Exit
-LBL_OFF = 2.0
+USE_INV = True
 
-# تحويل النقاط إلى سعر (الذهب: 1 نقطة = 0.10 في السعر)
-PT_P1 = TP1_PTS / MULT   # 10.0
-PT_P2 = TP2_PTS / MULT   # 15.0
-PT_P3 = TP3_PTS / MULT   # 20.0
-BUF_P = SL_BUF_PTS / MULT  # 1.0
+PT_P1 = TP1_PTS / MULT
+PT_P2 = TP2_PTS / MULT
+PT_P3 = TP3_PTS / MULT
+BUF_P = SL_BUF_PTS / MULT
 
-# ═══ LOOP SETTINGS ═══
-POLL_INTERVAL = 30       # ⬅️ فحص كل 30 ثانية (بدلاً من 5 دقائق)
-MAX_RUNTIME = 55 * 60    # 55 دقيقة متواصلة
+POLL_INTERVAL = 30
+MAX_RUNTIME = 55 * 60
 
-# ═══ TIME FORMATTER (توقيت الموصل 12 ساعة) ═══
+# ═══ TIME FORMATTER ═══
 def fmt_mosul(dt):
     local = dt.astimezone(MOSUL_TZ)
     h = local.hour % 12
@@ -102,9 +102,9 @@ async def open_session(session):
     headers = {"Authorization": f"Bearer {TICKERALL_API_KEY}"}
     payload = {
         "broker": "mt5",
-        "server": os.environ.get("MT5_SERVER", ""),
-        "account": int(os.environ.get("MT5_ACCOUNT", "0")),
-        "password": os.environ.get("MT5_PASSWORD", "")
+        "server": MT5_SERVER,
+        "account": int(MT5_ACCOUNT) if MT5_ACCOUNT and MT5_ACCOUNT.isdigit() else MT5_ACCOUNT,
+        "password": MT5_PASSWORD
     }
     for attempt in range(3):
         try:
@@ -146,20 +146,6 @@ async def fetch_candles(session, account_id, symbol, timeframe, limit=100):
             await asyncio.sleep(2)
     return None
 
-async def place_order(session, account_id, symbol, direction, volume, sl, tp, tag=""):
-    url = f"{BASE_URL}/v1/accounts/{account_id}/orders"
-    side = "buy" if direction == "BUY" else "sell"
-    payload = {"symbol": symbol, "side": side, "type": "market", "volume": volume, "sl": float(sl), "tp": float(tp), "comment": f"ICT-{tag}"}
-    headers = {"Authorization": f"Bearer {TICKERALL_API_KEY}", "Content-Type": "application/json"}
-    try:
-        async with session.post(url, headers=headers, json=payload, timeout=15) as r:
-            if r.status in [200, 201]:
-                data = await r.json()
-                return data.get("orderId") or data.get("ticket")
-    except Exception as e:
-        print(f"Order error: {e}")
-    return None
-
 # ═══ INDICATORS ═══
 def calc_atr(df, period=14):
     h, l, c = df["high"].values, df["low"].values, df["close"].values
@@ -193,7 +179,7 @@ def ta_pivotlow(lows, left=3, right=3):
             result[i + right] = lows[i]
     return result
 
-# ═══ SESSIONS (NY Time) ═══
+# ═══ SESSIONS ═══
 def in_win(dt_ny, h1, m1, h2, m2):
     t = dt_ny.hour * 60 + dt_ny.minute
     return (h1 * 60 + m1) <= t < (h2 * 60 + m2)
@@ -213,7 +199,7 @@ def session_flags(dt_ny):
                         in_win(dt_ny, 8, 30, 9, 0)) and not in_win(dt_ny, 12, 10, 13, 59))
     }
 
-# ═══ TREND (H1) ═══
+# ═══ TREND ═══
 def build_trend(df30, df1h):
     h1 = df1h.copy().sort_values("datetime").reset_index(drop=True)
     ema200 = h1["close"].ewm(span=200, adjust=False).mean().values
@@ -230,28 +216,8 @@ def build_trend(df30, df1h):
     down = hc < e200
     return {"up": up, "down": down, "sbull": up & (hc > e50), "sbear": down & (hc < e50)}
 
-# ═══ STATE ═══
-def load_state():
-    base = {"active_trades": {}, "last_bar_time": None, "last_signal_bars": {}}
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE) as f:
-                s = json.load(f)
-            for k, v in base.items():
-                if k not in s:
-                    s[k] = v
-            return s
-        except:
-            pass
-    return base
-
-def save_state(s):
-    with open(STATE_FILE, "w") as f:
-        json.dump(s, f, indent=2, default=str)
-
-# ═══ STRATEGY ENGINE (Real-Time) ══
-def check_signals(df, trend, state):
-    """فحص لحظي على آخر شمعة (حية أو مغلقة)"""
+# ═══ STRATEGY ENGINE ═══
+def check_signals(df, trend):
     n = len(df)
     if n < 50:
         return []
@@ -261,13 +227,11 @@ def check_signals(df, trend, state):
     sh_arr = ta_pivothigh(h, 3, 3)
     sl_arr = ta_pivotlow(l, 3, 3)
     
-    # آخر شمعة (قد تكون حية)
     i = n - 1
     atr_i = atr[i] if not np.isnan(atr[i]) else atr[-2]
     dt_ny = df.iloc[i]["datetime"].astimezone(NY_TZ)
     s = session_flags(dt_ny)
     
-    # Structure state (من آخر 30 شمعة)
     last_sh, last_sl = np.nan, np.nan
     for j in range(max(0, i-30), i+1):
         if not np.isnan(sh_arr[j]):
@@ -275,13 +239,11 @@ def check_signals(df, trend, state):
         if not np.isnan(sl_arr[j]):
             last_sl = sl_arr[j]
     
-    # Sweeps
     rec_low = df["low"].iloc[max(0,i-20):i].min() if i > 0 else l[i]
     rec_high = df["high"].iloc[max(0,i-20):i].max() if i > 0 else h[i]
     bull_sweep = bool(l[i] < rec_low and c[i] > rec_low)
     bear_sweep = bool(h[i] > rec_high and c[i] < rec_high)
     
-    # MSS
     bull_mss = False
     bear_mss = False
     for j in range(max(0, i-15), i):
@@ -290,7 +252,6 @@ def check_signals(df, trend, state):
         if not np.isnan(last_sl) and c[j] < last_sl and c[j-1] >= last_sl:
             bear_mss = True
     
-    # FVG
     b_active, s_active = False, False
     b_ce, s_ce = np.nan, np.nan
     b_bot, s_top = np.nan, np.nan
@@ -304,7 +265,6 @@ def check_signals(df, trend, state):
             s_ce = (l[i-2] + h[i]) / 2.0
             s_top = l[i-2]
     
-    # OB
     b_ob_active, s_ob_active = False, False
     b_ob_mt, s_ob_mt = np.nan, np.nan
     b_ob_low, s_ob_high = np.nan, np.nan
@@ -335,9 +295,7 @@ def check_signals(df, trend, state):
         dist = abs(entry - sl) * MULT
         return MIN_SL_PTS <= dist <= MAX_SL_PTS
     
-    # ══ 8 MODELS ═══
-    
-    # 1. MMBM (long only)
+    # 1. MMBM
     if s["am_kz"] and bull_sweep and bull_mss and b_ob_active and l[i] <= b_ob_mt and l[i] >= b_ob_low:
         if not np.isnan(swing_eq) and b_ob_mt < swing_eq and tu:
             entry, sl = b_ob_mt, b_ob_low - atr_i * 0.3 - BUF_P
@@ -367,7 +325,7 @@ def check_signals(df, trend, state):
             if check_risk(entry, sl, False):
                 signals.append({"model": "SilverBullet", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
     
-    # 4. Bearish Reaper (short only)
+    # 4. Bearish Reaper
     if s["sess_ok"] and sbr and not np.isnan(swing_eq) and c[i] > swing_eq and s_active and h[i] >= s_ce and h[i] <= s_top and c[i] < o[i]:
         entry, sl = s_ce, s_top + atr_i * 0.3 + BUF_P
         if check_risk(entry, sl, False):
@@ -408,7 +366,7 @@ def check_signals(df, trend, state):
             if check_risk(entry, sl, False):
                 signals.append({"model": "SBPM-MSS", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
     
-    # 8. OB-Pro (Book Rules: displacement + first tap + PD + body respect)
+    # 8. OB-Pro
     if s["sess_ok"]:
         if sb and b_ob_active and b_ob_bar_age <= 10 and bull_mss:
             if not np.isnan(swing_eq) and b_ob_mt < swing_eq and l[i] <= b_ob_mt and l[i] >= b_ob_low and c[i] > o[i] and c[i] > b_ob_mt:
@@ -426,20 +384,21 @@ def check_signals(df, trend, state):
 # ═══ MAIN LOOP ═══
 async def main():
     print("=" * 60)
-    print("🚀 ICT Gold v15 REAL-TIME BOT")
+    print(" ICT Gold v15 REAL-TIME BOT")
     print(f"⏱️  Polling: every {POLL_INTERVAL} seconds")
-    print(f" Max runtime: {MAX_RUNTIME // 60} minutes")
+    print(f"🔄 Max runtime: {MAX_RUNTIME // 60} minutes")
     print("=" * 60)
     
     start = time.time()
-    last_bar_time = None
-    last_signals = {}  # لمنع تكرار نفس الإشارة
+    last_signals = {}
     
     async with aiohttp.ClientSession() as session:
         account_id = await open_session(session)
         if not account_id:
-            print(" Failed to open session")
+            print("❌ Failed to open session")
             return
+        
+        print(f"✅ Session opened: {account_id}")
         
         while True:
             elapsed = time.time() - start
@@ -449,50 +408,48 @@ async def main():
                 break
             
             try:
-                # جلب آخر 100 شمعة (تشمل الشمعة الحية)
                 df = await fetch_candles(session, account_id, SYMBOL, "M30", 100)
                 if df is None or len(df) < 50:
                     await asyncio.sleep(POLL_INTERVAL)
                     continue
                 
-                # تحديث trend
                 df1h = await fetch_candles(session, account_id, SYMBOL, "H1", 500)
                 if df1h is None or len(df1h) < 60:
                     await asyncio.sleep(POLL_INTERVAL)
                     continue
                 
                 trend = build_trend(df, df1h)
+                signals = check_signals(df, trend)
                 
-                # فحص الإشارات
-                signals = check_signals(df, trend, {})
-                
-                # فلترة التكرار (نفس الشمعة + نفس النموذج)
                 current_bar_time = df.iloc[-1]["datetime"].isoformat()
                 for sig in signals:
                     key = f"{current_bar_time}_{sig['model']}_{sig['dir']}"
                     if key not in last_signals:
                         last_signals[key] = True
-                        # إرسال إشارة جديدة 🚀
+                        
+                        entry = sig['entry']
+                        tp1 = entry + (PT_P1 if sig['dir']=='BUY' else -PT_P1)
+                        tp2 = entry + (PT_P2 if sig['dir']=='BUY' else -PT_P2)
+                        tp3 = entry + (PT_P3 if sig['dir']=='BUY' else -PT_P3)
+                        
                         msg = (
-                            f" <b>إشارة دخول جديدة!</b>\n"
+                            f"🚀 <b>إشارة دخول جديدة!</b>\n"
                             f"━━━━━━━━━━━━━━━\n"
-                            f"📊 <b>النموذج:</b> {sig['model']}\n"
-                            f"📈 <b>الاتجاه:</b> {sig['dir']}\n"
-                            f"💰 <b>الدخول:</b> <code>{sig['entry']:.2f}</code>\n"
+                            f" <b>النموذج:</b> {sig['model']}\n"
+                            f" <b>الاتجاه:</b> {sig['dir']}\n"
+                            f"💰 <b>الدخول:</b> <code>{entry:.2f}</code>\n"
                             f"🛑 <b>الستوب:</b> <code>{sig['sl']:.2f}</code>\n"
-                            f"🎯 <b>الهدف 1:</b> <code>{sig['entry'] + (PT_P1 if sig['dir']=='BUY' else -PT_P1):.2f}</code> (100 نقطة)\n"
-                            f"🎯 <b>الهدف 2:</b> <code>{sig['entry'] + (PT_P2 if sig['dir']=='BUY' else -PT_P2):.2f}</code> (150 نقطة)\n"
-                            f"🎯🎯 <b>الهدف 3:</b> <code>{sig['entry'] + (PT_P3 if sig['dir']=='BUY' else -PT_P3):.2f}</code> (200 نقطة)\n"
+                            f"🎯 <b>الهدف 1:</b> <code>{tp1:.2f}</code> (100 نقطة)\n"
+                            f"🎯 <b>الهدف 2:</b> <code>{tp2:.2f}</code> (150 نقطة)\n"
+                            f"🎯🎯 <b>الهدف 3:</b> <code>{tp3:.2f}</code> (200 نقطة)\n"
                             f"━━━━━━━━━━━━━━━\n"
                             f"🕰️ <b>وقت الدخول (الموصل):</b> {sig['time']}"
                         )
                         await send_telegram(msg, session)
                         print(f"✅ Signal: {sig['model']} {sig['dir']} @ {sig['time']}")
                 
-                last_bar_time = current_bar_time
-                
             except Exception as e:
-                print(f" Loop error: {e}")
+                print(f"❌ Loop error: {e}")
                 traceback.print_exc()
             
             await asyncio.sleep(POLL_INTERVAL)
