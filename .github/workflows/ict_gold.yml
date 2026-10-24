@@ -26,6 +26,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_GROUP_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}
+          MT5_SERVER: ${{ secrets.MT5_SERVER }}
+          MT5_ACCOUNT: ${{ secrets.MT5_ACCOUNT }}
+          MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: python -u ict_bot.py
       - if: always()
