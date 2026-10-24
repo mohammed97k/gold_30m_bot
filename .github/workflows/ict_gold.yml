@@ -1,11 +1,10 @@
-name: ICT Gold Bot - Continuous Loop
+name: ICT Gold Bot - Real-Time Loop
 
 on:
-  workflow_dispatch: # للتشغيل اليدوي لأول مرة
+  workflow_dispatch:
 
-# إلغاء العمليات المتراكمة إذا كانت هناك عملية جديدة
 concurrency:
-  group: ict-gold-bot-loop
+  group: ict-gold-realtime
   cancel-in-progress: false
 
 permissions:
@@ -15,23 +14,26 @@ permissions:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - name: Check out repo
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: |
-          pip install pandas numpy requests pytz aiohttp
-
-      - name: Run ICT Gold Bot (Continuous Loop)
-        env:
+          python-version: '3.11'
+      - run: pip install pandas numpy aiohttp pytz
+      - env:
           TICKERALL_API_KEY: ${{ secrets.TICKERALL_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GH_PAT: ${{ secrets.GH_PAT }} # ضروري لكي يقوم البوت باستدعاء نفسه
+          TELEGRAM_GROUP_CHAT_ID: ${{ secrets.TELEGRAM_GROUP_CHAT_ID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: python -u ict_bot.py
+      - if: always()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add state.json || true
+          git diff --staged --quiet || git commit -m "state [skip ci]"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && break || sleep 5
+          done
