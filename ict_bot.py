@@ -1,14 +1,10 @@
 # ═══════════════════════════════════════════════════════════════
-# ICT Gold v15 REAL-TIME BOT
-#  حلول التأخير:
-#   - فحص كل 30 ثانية (بدلاً من 5 دقائق)
-#   - جلب الشمعة الحية + المغلقة
-#   - aiohttp للسرعة القصوى
-#   - حلقة مستمرة 55 دقيقة
+# ICT Gold v15 REAL-TIME BOT (GitHub Actions Edition)
+# يعمل لمدة 30 دقيقة ثم يتوقف، وGitHub يشغله مرة ثانية تلقائياً
 # ══════════════════════════════════════════════════════════════
 
 import os, json, time, asyncio, traceback
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import aiohttp
 import pandas as pd
@@ -22,11 +18,6 @@ TELEGRAM_GROUP_CHAT_ID = os.environ.get("TELEGRAM_GROUP_CHAT_ID")
 MT5_SERVER = os.environ.get("MT5_SERVER")
 MT5_ACCOUNT = os.environ.get("MT5_ACCOUNT")
 MT5_PASSWORD = os.environ.get("MT5_PASSWORD")
-GH_PAT = os.environ.get("GH_PAT")
-
-GH_OWNER = "mohammed97k"
-GH_REPO = "gold_30m_bot"
-GH_WORKFLOW = "ict_gold.yml"
 
 STATE_FILE = "state.json"
 BASE_URL = "https://api.tickerall.com"
@@ -34,7 +25,7 @@ SYMBOL = "XAUUSD!"
 NY_TZ = ZoneInfo("America/New_York")
 MOSUL_TZ = ZoneInfo("Asia/Baghdad")
 
-# ═══ STRATEGY PARAMS ═══
+# ══ STRATEGY PARAMS ═══
 MULT = 10.0
 ATR_PERIOD = 14
 MIN_SL_PTS = 40.0
@@ -45,8 +36,6 @@ MAX_BARS_TRADE = 60
 TP1_PTS = 100.0
 TP2_PTS = 150.0
 TP3_PTS = 200.0
-CHOP_MULT = 0.9
-USE_INV = True
 
 PT_P1 = TP1_PTS / MULT
 PT_P2 = TP2_PTS / MULT
@@ -54,9 +43,9 @@ PT_P3 = TP3_PTS / MULT
 BUF_P = SL_BUF_PTS / MULT
 
 POLL_INTERVAL = 30
-MAX_RUNTIME = 55 * 60
+MAX_RUNTIME = 30 * 60  # 30 دقيقة فقط (GitHub يشغله مرة ثانية بعد 30 دقيقة)
 
-# ═══ TIME FORMATTER ═══
+# ══ TIME FORMATTER ═══
 def fmt_mosul(dt):
     local = dt.astimezone(MOSUL_TZ)
     h = local.hour % 12
@@ -68,7 +57,7 @@ def fmt_mosul(dt):
 # ═══ TELEGRAM ═══
 async def send_telegram(msg, session=None):
     if not TELEGRAM_BOT_TOKEN:
-        print("⚠️ TG token missing")
+        print("️ TG token missing")
         return
     chats = [c for c in [TELEGRAM_CHAT_ID, TELEGRAM_GROUP_CHAT_ID] if c]
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -83,18 +72,6 @@ async def send_telegram(msg, session=None):
             print(f"✅ TG -> {chat_id}")
         except Exception as e:
             print(f"❌ TG error: {e}")
-
-# ═══ GITHUB SELF-DISPATCH ══
-async def dispatch_next(session):
-    if not GH_PAT:
-        return
-    url = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/actions/workflows/{GH_WORKFLOW}/dispatches"
-    headers = {"Authorization": f"token {GH_PAT}", "Accept": "application/vnd.github.v3+json"}
-    try:
-        async with session.post(url, headers=headers, json={"ref": "main"}, timeout=15) as r:
-            print(f"🔄 Dispatched next run: {r.status}")
-    except Exception as e:
-        print(f"❌ Dispatch error: {e}")
 
 # ═══ MT5 API ═══
 async def open_session(session):
@@ -199,7 +176,7 @@ def session_flags(dt_ny):
                         in_win(dt_ny, 8, 30, 9, 0)) and not in_win(dt_ny, 12, 10, 13, 59))
     }
 
-# ═══ TREND ═══
+# ══ TREND ═══
 def build_trend(df30, df1h):
     h1 = df1h.copy().sort_values("datetime").reset_index(drop=True)
     ema200 = h1["close"].ewm(span=200, adjust=False).mean().values
@@ -216,8 +193,27 @@ def build_trend(df30, df1h):
     down = hc < e200
     return {"up": up, "down": down, "sbull": up & (hc > e50), "sbear": down & (hc < e50)}
 
-# ═══ STRATEGY ENGINE ═══
-def check_signals(df, trend):
+# ═══ STATE ═══
+def load_state():
+    base = {"last_signal_bars": {}}
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE) as f:
+                s = json.load(f)
+            for k, v in base.items():
+                if k not in s:
+                    s[k] = v
+            return s
+        except:
+            pass
+    return base
+
+def save_state(s):
+    with open(STATE_FILE, "w") as f:
+        json.dump(s, f, indent=2, default=str)
+
+# ══ STRATEGY ENGINE ═══
+def check_signals(df, trend, state):
     n = len(df)
     if n < 50:
         return []
@@ -384,9 +380,9 @@ def check_signals(df, trend):
 # ═══ MAIN LOOP ═══
 async def main():
     print("=" * 60)
-    print(" ICT Gold v15 REAL-TIME BOT")
+    print("🚀 ICT Gold v15 REAL-TIME BOT (GitHub Actions)")
     print(f"⏱️  Polling: every {POLL_INTERVAL} seconds")
-    print(f"🔄 Max runtime: {MAX_RUNTIME // 60} minutes")
+    print(f"🔄 Runtime: {MAX_RUNTIME // 60} minutes")
     print("=" * 60)
     
     start = time.time()
@@ -403,8 +399,7 @@ async def main():
         while True:
             elapsed = time.time() - start
             if elapsed >= MAX_RUNTIME:
-                print("✅ 55 min reached, dispatching next run...")
-                await dispatch_next(session)
+                print("✅ 30 min reached, stopping (GitHub will restart)")
                 break
             
             try:
@@ -419,7 +414,7 @@ async def main():
                     continue
                 
                 trend = build_trend(df, df1h)
-                signals = check_signals(df, trend)
+                signals = check_signals(df, trend, {})
                 
                 current_bar_time = df.iloc[-1]["datetime"].isoformat()
                 for sig in signals:
@@ -435,10 +430,10 @@ async def main():
                         msg = (
                             f"🚀 <b>إشارة دخول جديدة!</b>\n"
                             f"━━━━━━━━━━━━━━━\n"
-                            f" <b>النموذج:</b> {sig['model']}\n"
-                            f" <b>الاتجاه:</b> {sig['dir']}\n"
+                            f"📊 <b>النموذج:</b> {sig['model']}\n"
+                            f"📈 <b>الاتجاه:</b> {sig['dir']}\n"
                             f"💰 <b>الدخول:</b> <code>{entry:.2f}</code>\n"
-                            f"🛑 <b>الستوب:</b> <code>{sig['sl']:.2f}</code>\n"
+                            f" <b>الستوب:</b> <code>{sig['sl']:.2f}</code>\n"
                             f"🎯 <b>الهدف 1:</b> <code>{tp1:.2f}</code> (100 نقطة)\n"
                             f"🎯 <b>الهدف 2:</b> <code>{tp2:.2f}</code> (150 نقطة)\n"
                             f"🎯🎯 <b>الهدف 3:</b> <code>{tp3:.2f}</code> (200 نقطة)\n"
