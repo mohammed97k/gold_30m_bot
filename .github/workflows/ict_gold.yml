@@ -2,8 +2,8 @@ name: ICT Gold Bot - Real-Time Loop
 
 on:
   schedule:
-    - cron: '0,30 * * * 1-5'  # كل 30 دقيقة، من الاثنين للجمعة
-  workflow_dispatch:  # للتشغيل اليدوي
+    - cron: '0,30 * * * 1-5'  # يعمل كل 30 دقيقة، من الاثنين للجمعة
+  workflow_dispatch:  # يسمح بالتشغيل اليدوي
 
 concurrency:
   group: ict-gold-realtime
@@ -17,12 +17,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install pandas numpy aiohttp pytz
-      - env:
+
+      - name: Install dependencies
+        run: pip install pandas numpy aiohttp pytz
+
+      - name: Run ICT Gold Bot
+        env:
           TICKERALL_API_KEY: ${{ secrets.TICKERALL_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -31,12 +38,14 @@ jobs:
           MT5_ACCOUNT: ${{ secrets.MT5_ACCOUNT }}
           MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
         run: python -u ict_bot.py
-      - if: always()
+
+      - name: Commit state file
+        if: always()
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add state.json || true
-          git diff --staged --quiet || git commit -m "state [skip ci]"
+          git diff --staged --quiet || git commit -m "Update state [skip ci]"
           for i in 1 2 3; do
             git pull --rebase origin main && git push origin HEAD:main && break || sleep 5
           done
