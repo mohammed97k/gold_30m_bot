@@ -1,7 +1,9 @@
 name: ICT Gold Bot - Real-Time Loop
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '0,30 * * * 1-5'  # كل 30 دقيقة، من الاثنين للجمعة
+  workflow_dispatch:  # للتشغيل اليدوي
 
 concurrency:
   group: ict-gold-realtime
@@ -9,12 +11,11 @@ concurrency:
 
 permissions:
   contents: write
-  actions: write
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,7 +30,6 @@ jobs:
           MT5_SERVER: ${{ secrets.MT5_SERVER }}
           MT5_ACCOUNT: ${{ secrets.MT5_ACCOUNT }}
           MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
-          GH_PAT: ${{ secrets.GH_PAT }}
         run: python -u ict_bot.py
       - if: always()
         run: |
