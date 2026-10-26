@@ -2,8 +2,8 @@ name: ICT Gold Bot - Real-Time Loop
 
 on:
   schedule:
-    - cron: '0,30 * * * 1-5'  # يعمل كل 30 دقيقة، من الاثنين للجمعة
-  workflow_dispatch:  # يسمح بالتشغيل اليدوي
+    - cron: '*/30 * * * 1-5'  # يعمل كل 30 دقيقة، من الاثنين للجمعة
+  workflow_dispatch:          # يسمح بالتشغيل اليدوي
 
 concurrency:
   group: ict-gold-realtime
@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - name: Check out repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
