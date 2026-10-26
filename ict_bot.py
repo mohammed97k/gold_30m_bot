@@ -25,7 +25,7 @@ SYMBOL = "XAUUSD!"
 NY_TZ = ZoneInfo("America/New_York")
 MOSUL_TZ = ZoneInfo("Asia/Baghdad")
 
-# ══ STRATEGY PARAMS ═══
+# ═══ STRATEGY PARAMS ═══
 MULT = 10.0
 ATR_PERIOD = 14
 MIN_SL_PTS = 40.0
@@ -45,7 +45,7 @@ BUF_P = SL_BUF_PTS / MULT
 POLL_INTERVAL = 30
 MAX_RUNTIME = 30 * 60  # 30 دقيقة فقط (GitHub يشغله مرة ثانية بعد 30 دقيقة)
 
-# ══ TIME FORMATTER ═══
+# ═══ TIME FORMATTER ═══
 def fmt_mosul(dt):
     local = dt.astimezone(MOSUL_TZ)
     h = local.hour % 12
@@ -57,7 +57,7 @@ def fmt_mosul(dt):
 # ═══ TELEGRAM ═══
 async def send_telegram(msg, session=None):
     if not TELEGRAM_BOT_TOKEN:
-        print("️ TG token missing")
+        print("⚠️ TG token missing")
         return
     chats = [c for c in [TELEGRAM_CHAT_ID, TELEGRAM_GROUP_CHAT_ID] if c]
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -123,7 +123,7 @@ async def fetch_candles(session, account_id, symbol, timeframe, limit=100):
             await asyncio.sleep(2)
     return None
 
-# ═══ INDICATORS ═══
+# ══ INDICATORS ═══
 def calc_atr(df, period=14):
     h, l, c = df["high"].values, df["low"].values, df["close"].values
     n = len(df)
@@ -176,7 +176,7 @@ def session_flags(dt_ny):
                         in_win(dt_ny, 8, 30, 9, 0)) and not in_win(dt_ny, 12, 10, 13, 59))
     }
 
-# ══ TREND ═══
+# ═══ TREND ═══
 def build_trend(df30, df1h):
     h1 = df1h.copy().sort_values("datetime").reset_index(drop=True)
     ema200 = h1["close"].ewm(span=200, adjust=False).mean().values
@@ -193,27 +193,8 @@ def build_trend(df30, df1h):
     down = hc < e200
     return {"up": up, "down": down, "sbull": up & (hc > e50), "sbear": down & (hc < e50)}
 
-# ═══ STATE ═══
-def load_state():
-    base = {"last_signal_bars": {}}
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE) as f:
-                s = json.load(f)
-            for k, v in base.items():
-                if k not in s:
-                    s[k] = v
-            return s
-        except:
-            pass
-    return base
-
-def save_state(s):
-    with open(STATE_FILE, "w") as f:
-        json.dump(s, f, indent=2, default=str)
-
-# ══ STRATEGY ENGINE ═══
-def check_signals(df, trend, state):
+# ═══ STRATEGY ENGINE ═══
+def check_signals(df, trend):
     n = len(df)
     if n < 50:
         return []
@@ -380,7 +361,7 @@ def check_signals(df, trend, state):
 # ═══ MAIN LOOP ═══
 async def main():
     print("=" * 60)
-    print("🚀 ICT Gold v15 REAL-TIME BOT (GitHub Actions)")
+    print(" ICT Gold v15 REAL-TIME BOT (GitHub Actions)")
     print(f"⏱️  Polling: every {POLL_INTERVAL} seconds")
     print(f"🔄 Runtime: {MAX_RUNTIME // 60} minutes")
     print("=" * 60)
@@ -414,7 +395,7 @@ async def main():
                     continue
                 
                 trend = build_trend(df, df1h)
-                signals = check_signals(df, trend, {})
+                signals = check_signals(df, trend)
                 
                 current_bar_time = df.iloc[-1]["datetime"].isoformat()
                 for sig in signals:
@@ -428,12 +409,12 @@ async def main():
                         tp3 = entry + (PT_P3 if sig['dir']=='BUY' else -PT_P3)
                         
                         msg = (
-                            f"🚀 <b>إشارة دخول جديدة!</b>\n"
+                            f" <b>إشارة دخول جديدة!</b>\n"
                             f"━━━━━━━━━━━━━━━\n"
                             f"📊 <b>النموذج:</b> {sig['model']}\n"
                             f"📈 <b>الاتجاه:</b> {sig['dir']}\n"
                             f"💰 <b>الدخول:</b> <code>{entry:.2f}</code>\n"
-                            f" <b>الستوب:</b> <code>{sig['sl']:.2f}</code>\n"
+                            f"🛑 <b>الستوب:</b> <code>{sig['sl']:.2f}</code>\n"
                             f"🎯 <b>الهدف 1:</b> <code>{tp1:.2f}</code> (100 نقطة)\n"
                             f"🎯 <b>الهدف 2:</b> <code>{tp2:.2f}</code> (150 نقطة)\n"
                             f"🎯🎯 <b>الهدف 3:</b> <code>{tp3:.2f}</code> (200 نقطة)\n"
