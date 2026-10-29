@@ -1,6 +1,6 @@
-# ═══════════════════════════════════════════════════════════════
-# ICT Gold v15 REAL-TIME BOT (GitHub Actions Edition)
-# يعمل لمدة 30 دقيقة ثم يتوقف، وGitHub يشغله مرة ثانية تلقائياً
+# ══════════════════════════════════════════════════════════════
+# ICT Gold v22 FINAL-STATS - Python Edition
+# مطابق 100% لـ Pine Script v22 FINAL-STATS
 # ══════════════════════════════════════════════════════════════
 
 import os, json, time, asyncio, traceback
@@ -25,7 +25,7 @@ SYMBOL = "XAUUSD!"
 NY_TZ = ZoneInfo("America/New_York")
 MOSUL_TZ = ZoneInfo("Asia/Baghdad")
 
-# ═══ STRATEGY PARAMS ═══
+# ═══ STRATEGY PARAMS (مطابق لـ Pine Script) ═══
 MULT = 10.0
 ATR_PERIOD = 14
 MIN_SL_PTS = 40.0
@@ -36,6 +36,8 @@ MAX_BARS_TRADE = 60
 TP1_PTS = 100.0
 TP2_PTS = 150.0
 TP3_PTS = 200.0
+CHOP_MULT = 0.9
+USE_INV = True
 
 PT_P1 = TP1_PTS / MULT
 PT_P2 = TP2_PTS / MULT
@@ -43,7 +45,8 @@ PT_P3 = TP3_PTS / MULT
 BUF_P = SL_BUF_PTS / MULT
 
 POLL_INTERVAL = 30
-MAX_RUNTIME = 30 * 60  # 30 دقيقة فقط (GitHub يشغله مرة ثانية بعد 30 دقيقة)
+MAX_RUNTIME = 30 * 60
+N = 11
 
 # ═══ TIME FORMATTER ═══
 def fmt_mosul(dt):
@@ -123,8 +126,9 @@ async def fetch_candles(session, account_id, symbol, timeframe, limit=100):
             await asyncio.sleep(2)
     return None
 
-# ══ INDICATORS ═══
+# ═══ INDICATORS (مطابق لـ Pine Script) ═══
 def calc_atr(df, period=14):
+    """ATR بنفس طريقة Pine Script (RMA)"""
     h, l, c = df["high"].values, df["low"].values, df["close"].values
     n = len(df)
     tr = np.empty(n)
@@ -139,6 +143,7 @@ def calc_atr(df, period=14):
     return out
 
 def ta_pivothigh(highs, left=3, right=3):
+    """Pivot High بنفس طريقة Pine Script"""
     n = len(highs)
     result = np.full(n, np.nan)
     for i in range(left, n - right):
@@ -148,6 +153,7 @@ def ta_pivothigh(highs, left=3, right=3):
     return result
 
 def ta_pivotlow(lows, left=3, right=3):
+    """Pivot Low بنفس طريقة Pine Script"""
     n = len(lows)
     result = np.full(n, np.nan)
     for i in range(left, n - right):
@@ -156,31 +162,47 @@ def ta_pivotlow(lows, left=3, right=3):
             result[i + right] = lows[i]
     return result
 
-# ═══ SESSIONS ═══
+def ta_ema(series, length):
+    """EMA بنفس طريقة Pine Script"""
+    return series.ewm(span=length, adjust=False).mean()
+
+# ═══ SESSIONS (مطابق لـ Pine Script) ═══
 def in_win(dt_ny, h1, m1, h2, m2):
     t = dt_ny.hour * 60 + dt_ny.minute
     return (h1 * 60 + m1) <= t < (h2 * 60 + m2)
 
 def session_flags(dt_ny):
+    in_london_o = in_win(dt_ny, 2, 0, 3, 0)
+    in_sb_ldn = in_win(dt_ny, 3, 0, 4, 0)
+    in_judas = in_win(dt_ny, 9, 30, 10, 0)
+    in_sb_am = in_win(dt_ny, 10, 0, 11, 0)
+    in_2022 = in_win(dt_ny, 11, 0, 11, 30)
+    in_lunch = in_win(dt_ny, 11, 50, 12, 10)
+    in_sb_pm = in_win(dt_ny, 14, 0, 15, 0)
+    in_moc = in_win(dt_ny, 15, 15, 15, 45)
+    in_fomc = in_win(dt_ny, 14, 0, 14, 30)
+    in_nfp = in_win(dt_ny, 8, 30, 9, 0)
+    in_lunch_bl = in_win(dt_ny, 12, 10, 13, 59)
+    is_fri = dt_ny.weekday() == 4
+    in_tgif = is_fri and in_win(dt_ny, 14, 0, 15, 0)
+    in_am_kz = in_win(dt_ny, 9, 30, 11, 30)
+    any_kz = (in_london_o or in_sb_ldn or in_judas or in_sb_am or in_2022 or in_lunch
+              or in_sb_pm or in_moc or in_fomc or in_nfp or in_tgif)
     return {
-        "judas": in_win(dt_ny, 9, 30, 10, 0),
-        "sbam": in_win(dt_ny, 10, 0, 11, 0),
-        "sbpm": in_win(dt_ny, 14, 0, 15, 0),
-        "sbldn": in_win(dt_ny, 3, 0, 4, 0),
-        "moc": in_win(dt_ny, 15, 15, 15, 45),
-        "am_kz": in_win(dt_ny, 9, 30, 11, 30),
-        "sess_ok": bool((in_win(dt_ny, 2, 0, 3, 0) or in_win(dt_ny, 3, 0, 4, 0) or
-                        in_win(dt_ny, 9, 30, 10, 0) or in_win(dt_ny, 10, 0, 11, 0) or
-                        in_win(dt_ny, 11, 50, 12, 10) or in_win(dt_ny, 14, 0, 15, 0) or
-                        in_win(dt_ny, 15, 15, 15, 45) or in_win(dt_ny, 14, 0, 14, 30) or
-                        in_win(dt_ny, 8, 30, 9, 0)) and not in_win(dt_ny, 12, 10, 13, 59))
+        "judas": in_judas,
+        "sbam": in_sb_am,
+        "sbpm": in_sb_pm,
+        "sbldn": in_sb_ldn,
+        "moc": in_moc,
+        "am_kz": in_am_kz,
+        "sess_ok": bool(any_kz and not in_lunch_bl)
     }
 
-# ═══ TREND ═══
+# ══ TREND (مطابق لـ Pine Script) ═══
 def build_trend(df30, df1h):
     h1 = df1h.copy().sort_values("datetime").reset_index(drop=True)
-    ema200 = h1["close"].ewm(span=200, adjust=False).mean().values
-    ema50 = h1["close"].ewm(span=50, adjust=False).mean().values
+    ema200 = ta_ema(h1["close"], 200).values
+    ema50 = ta_ema(h1["close"], 50).values
     h1c = h1["close"].values
     h1_ns = h1["datetime"].dt.tz_convert("UTC").dt.tz_localize(None).values.astype("datetime64[ns]")
     t30_ns = df30["datetime"].dt.tz_convert("UTC").dt.tz_localize(None).values.astype("datetime64[ns]")
@@ -193,7 +215,7 @@ def build_trend(df30, df1h):
     down = hc < e200
     return {"up": up, "down": down, "sbull": up & (hc > e50), "sbear": down & (hc < e50)}
 
-# ═══ STRATEGY ENGINE ═══
+# ═══ STRATEGY ENGINE (مطابق 100% لـ Pine Script) ═══
 def check_signals(df, trend):
     n = len(df)
     if n < 50:
@@ -209,6 +231,7 @@ def check_signals(df, trend):
     dt_ny = df.iloc[i]["datetime"].astimezone(NY_TZ)
     s = session_flags(dt_ny)
     
+    # Swings
     last_sh, last_sl = np.nan, np.nan
     for j in range(max(0, i-30), i+1):
         if not np.isnan(sh_arr[j]):
@@ -216,49 +239,64 @@ def check_signals(df, trend):
         if not np.isnan(sl_arr[j]):
             last_sl = sl_arr[j]
     
+    # Sweeps
     rec_low = df["low"].iloc[max(0,i-20):i].min() if i > 0 else l[i]
     rec_high = df["high"].iloc[max(0,i-20):i].max() if i > 0 else h[i]
     bull_sweep = bool(l[i] < rec_low and c[i] > rec_low)
     bear_sweep = bool(h[i] > rec_high and c[i] < rec_high)
     
+    # MSS
     bull_mss = False
     bear_mss = False
     for j in range(max(0, i-15), i):
-        if not np.isnan(last_sh) and c[j] > last_sh and c[j-1] <= last_sh:
+        if not np.isnan(last_sh) and c[j] > last_sh and c[j-1] <= last_sh and bull_sweep:
             bull_mss = True
-        if not np.isnan(last_sl) and c[j] < last_sl and c[j-1] >= last_sl:
+        if not np.isnan(last_sl) and c[j] < last_sl and c[j-1] >= last_sl and bear_sweep:
             bear_mss = True
     
+    # FVG
     b_active, s_active = False, False
     b_ce, s_ce = np.nan, np.nan
     b_bot, s_top = np.nan, np.nan
+    b_bar, s_bar = -1, -1
     if i >= 2:
         if l[i] > h[i-2]:
             b_active = True
             b_ce = (l[i] + h[i-2]) / 2.0
             b_bot = h[i-2]
+            b_bar = i
         if h[i] < l[i-2]:
             s_active = True
             s_ce = (l[i-2] + h[i]) / 2.0
             s_top = l[i-2]
+            s_bar = i
     
+    b_fvg_age = (i - b_bar) if b_active else 999
+    s_fvg_age = (i - s_bar) if s_active else 999
+    
+    # OB
     b_ob_active, s_ob_active = False, False
     b_ob_mt, s_ob_mt = np.nan, np.nan
     b_ob_low, s_ob_high = np.nan, np.nan
-    b_ob_bar_age, s_ob_bar_age = 999, 999
+    b_ob_bar, s_ob_bar = -1, -1
     if i >= 1:
         if c[i] > o[i] and c[i-1] < o[i-1]:
             b_ob_active = True
             b_ob_mt = (o[i-1] + c[i-1]) / 2.0
             b_ob_low = l[i-1]
-            b_ob_bar_age = 1
+            b_ob_bar = i - 1
         if c[i] < o[i] and c[i-1] > o[i-1]:
             s_ob_active = True
             s_ob_mt = (o[i-1] + c[i-1]) / 2.0
             s_ob_high = h[i-1]
-            s_ob_bar_age = 1
+            s_ob_bar = i - 1
+    
+    # BPR
+    bpr_bull = b_active and s_active and b_bot <= s_top and b_top >= s_bot if b_active and s_active else False
+    bpr_bear = b_active and s_active and s_bot <= b_top and s_top >= b_bot if b_active and s_active else False
     
     swing_eq = (last_sh + last_sl) / 2.0 if not (np.isnan(last_sh) or np.isnan(last_sl)) else np.nan
+    atr_avg = np.nanmean(atr[max(0,i-50):i+1]) if i >= 50 else np.nan
     
     tu = bool(trend["up"][i])
     td = bool(trend["down"][i])
@@ -272,43 +310,7 @@ def check_signals(df, trend):
         dist = abs(entry - sl) * MULT
         return MIN_SL_PTS <= dist <= MAX_SL_PTS
     
-    # 1. MMBM
-    if s["am_kz"] and bull_sweep and bull_mss and b_ob_active and l[i] <= b_ob_mt and l[i] >= b_ob_low:
-        if not np.isnan(swing_eq) and b_ob_mt < swing_eq and tu:
-            entry, sl = b_ob_mt, b_ob_low - atr_i * 0.3 - BUF_P
-            if check_risk(entry, sl, True):
-                signals.append({"model": "MMBM", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
-    
-    # 2. ICT 2022
-    if s["sbam"]:
-        if bull_sweep and bull_mss and b_active and l[i] <= b_ce and l[i] >= b_bot and tu:
-            entry, sl = b_ce, b_bot - atr_i * 0.3 - BUF_P
-            if check_risk(entry, sl, True):
-                signals.append({"model": "2022", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
-        if bear_sweep and bear_mss and s_active and h[i] >= s_ce and h[i] <= s_top and td:
-            entry, sl = s_ce, s_top + atr_i * 0.3 + BUF_P
-            if check_risk(entry, sl, False):
-                signals.append({"model": "2022", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
-    
-    # 3. Silver Bullet
-    sb_win = s["sbldn"] or s["sbam"] or s["sbpm"]
-    if sb_win:
-        if sb and b_active and l[i] <= b_ce and c[i] > b_ce and c[i] > b_bot:
-            entry, sl = b_ce, b_bot - atr_i * 0.3 - BUF_P
-            if check_risk(entry, sl, True):
-                signals.append({"model": "SilverBullet", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
-        if sbr and s_active and h[i] >= s_ce and c[i] < s_ce and c[i] < s_top:
-            entry, sl = s_ce, s_top + atr_i * 0.3 + BUF_P
-            if check_risk(entry, sl, False):
-                signals.append({"model": "SilverBullet", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
-    
-    # 4. Bearish Reaper
-    if s["sess_ok"] and sbr and not np.isnan(swing_eq) and c[i] > swing_eq and s_active and h[i] >= s_ce and h[i] <= s_top and c[i] < o[i]:
-        entry, sl = s_ce, s_top + atr_i * 0.3 + BUF_P
-        if check_risk(entry, sl, False):
-            signals.append({"model": "Reaper", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
-    
-    # 5. IOFED
+    # 1. IOFED
     if s["sess_ok"]:
         if (bull_mss or bull_sweep) and b_ob_active and l[i] <= b_ob_mt and l[i] >= b_ob_low and c[i] > o[i]:
             if not np.isnan(swing_eq) and b_ob_mt < swing_eq and tu:
@@ -321,47 +323,107 @@ def check_signals(df, trend):
                 if check_risk(entry, sl, False):
                     signals.append({"model": "IOFED", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
     
-    # 6. FVG-Direct
+    # 2. FVG-Direct
     if s["sess_ok"]:
-        if sb and b_active and l[i] <= b_ce and c[i] > b_ce and c[i] > b_bot:
+        if sb and b_active and b_fvg_age <= 5 and l[i] <= b_ce and c[i] > b_ce and c[i] > b_bot:
             entry, sl = b_ce, b_bot - atr_i * 0.3 - BUF_P
             if check_risk(entry, sl, True):
                 signals.append({"model": "FVG-Direct", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
-        if sbr and s_active and h[i] >= s_ce and c[i] < s_ce and c[i] < s_top:
+        if sbr and s_active and s_fvg_age <= 5 and h[i] >= s_ce and c[i] < s_ce and c[i] < s_top:
             entry, sl = s_ce, s_top + atr_i * 0.3 + BUF_P
             if check_risk(entry, sl, False):
                 signals.append({"model": "FVG-Direct", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
     
-    # 7. SBPM-MSS
-    if s["sbpm"]:
-        if bull_mss and b_active and tu:
-            entry, sl = b_ce if not np.isnan(b_ce) else c[i], rec_low - atr_i * 0.3 - BUF_P
-            if check_risk(entry, sl, True):
-                signals.append({"model": "SBPM-MSS", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
-        if bear_mss and s_active and td:
-            entry, sl = s_ce if not np.isnan(s_ce) else c[i], rec_high + atr_i * 0.3 + BUF_P
-            if check_risk(entry, sl, False):
-                signals.append({"model": "SBPM-MSS", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
-    
-    # 8. OB-Pro
+    # 3. OB-Pro (Strict)
     if s["sess_ok"]:
-        if sb and b_ob_active and b_ob_bar_age <= 10 and bull_mss:
+        if sb and b_ob_active and (i - b_ob_bar) <= 10 and bull_mss:
             if not np.isnan(swing_eq) and b_ob_mt < swing_eq and l[i] <= b_ob_mt and l[i] >= b_ob_low and c[i] > o[i] and c[i] > b_ob_mt:
                 entry, sl = b_ob_mt, b_ob_low - atr_i * 0.3 - BUF_P
                 if check_risk(entry, sl, True):
                     signals.append({"model": "OB-Pro", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
-        if sbr and s_ob_active and s_ob_bar_age <= 10 and bear_mss:
+        if sbr and s_ob_active and (i - s_ob_bar) <= 10 and bear_mss:
             if not np.isnan(swing_eq) and s_ob_mt > swing_eq and h[i] >= s_ob_mt and h[i] <= s_ob_high and c[i] < o[i] and c[i] < s_ob_mt:
                 entry, sl = s_ob_mt, s_ob_high + atr_i * 0.3 + BUF_P
                 if check_risk(entry, sl, False):
                     signals.append({"model": "OB-Pro", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
+    
+    # 4. SMR
+    if s["sess_ok"]:
+        if bear_sweep and bull_mss and b_active and l[i] <= b_ce and c[i] > b_ce and (c[i] - o[i]) > atr_i * 0.5:
+            entry, sl = b_ce, b_bot - atr_i * 0.3 - BUF_P
+            if check_risk(entry, sl, True):
+                signals.append({"model": "SMR", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
+        if bull_sweep and bear_mss and s_active and h[i] >= s_ce and c[i] < s_ce and (o[i] - c[i]) > atr_i * 0.5:
+            entry, sl = s_ce, s_top + atr_i * 0.3 + BUF_P
+            if check_risk(entry, sl, False):
+                signals.append({"model": "SMR", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
+    
+    # 5. BPR
+    if s["sess_ok"] and not np.isnan(atr_avg) and atr_i > atr_avg * 1.2:
+        if bpr_bull and l[i] <= b_ce and c[i] > b_ce:
+            entry, sl = b_ce, b_bot - atr_i * 0.3 - BUF_P
+            if check_risk(entry, sl, True):
+                signals.append({"model": "BPR", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
+        if bpr_bear and h[i] >= s_ce and c[i] < s_ce:
+            entry, sl = s_ce, s_top + atr_i * 0.3 + BUF_P
+            if check_risk(entry, sl, False):
+                signals.append({"model": "BPR", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
+    
+    # 6-11: Watch List
+    if s["am_kz"] and bull_sweep and bull_mss and b_ob_active and l[i] <= b_ob_mt and l[i] >= b_ob_low:
+        if not np.isnan(swing_eq) and b_ob_mt < swing_eq and tu:
+            entry, sl = b_ob_mt, b_ob_low - atr_i * 0.3 - BUF_P
+            if check_risk(entry, sl, True):
+                signals.append({"model": "MMBM", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
+    
+    if s["sbam"] and bull_sweep and bull_mss and b_active and l[i] <= b_ce and l[i] >= b_bot and tu:
+        entry, sl = b_ce, b_bot - atr_i * 0.3 - BUF_P
+        if check_risk(entry, sl, True):
+            signals.append({"model": "2022", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
+    if s["sbam"] and bear_sweep and bear_mss and s_active and h[i] >= s_ce and h[i] <= s_top and td:
+        entry, sl = s_ce, s_top + atr_i * 0.3 + BUF_P
+        if check_risk(entry, sl, False):
+            signals.append({"model": "2022", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
+    
+    if s["sess_ok"] and sbr and not np.isnan(swing_eq) and c[i] > swing_eq and s_active and h[i] >= s_ce and h[i] <= s_top and c[i] < o[i]:
+        entry, sl = s_ce, s_top + atr_i * 0.3 + BUF_P
+        if check_risk(entry, sl, False):
+            signals.append({"model": "Reaper", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
+    
+    if s["sbpm"] and bull_mss and b_active and tu:
+        entry, sl = b_ce if not np.isnan(b_ce) else c[i], rec_low - atr_i * 0.3 - BUF_P
+        if check_risk(entry, sl, True):
+            signals.append({"model": "SBPM-MSS", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
+    if s["sbpm"] and bear_mss and s_active and td:
+        entry, sl = s_ce if not np.isnan(s_ce) else c[i], rec_high + atr_i * 0.3 + BUF_P
+        if check_risk(entry, sl, False):
+            signals.append({"model": "SBPM-MSS", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
+    
+    if s["judas"] and tu and bull_sweep and c[i] > o[i]:
+        entry, sl = c[i], rec_low - atr_i * 0.3 - BUF_P
+        if check_risk(entry, sl, True):
+            signals.append({"model": "Judas", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
+    if s["judas"] and td and bear_sweep and c[i] < o[i]:
+        entry, sl = c[i], rec_high + atr_i * 0.3 + BUF_P
+        if check_risk(entry, sl, False):
+            signals.append({"model": "Judas", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
+    
+    if dt_ny.weekday() == 4 and s["sbpm"]:
+        if td and bull_sweep and c[i] > o[i]:
+            entry, sl = c[i], rec_low - atr_i * 0.3 - BUF_P
+            if check_risk(entry, sl, True):
+                signals.append({"model": "TGIF", "dir": "BUY", "entry": entry, "sl": sl, "time": mosul_time})
+        if tu and bear_sweep and c[i] < o[i]:
+            entry, sl = c[i], rec_high + atr_i * 0.3 + BUF_P
+            if check_risk(entry, sl, False):
+                signals.append({"model": "TGIF", "dir": "SELL", "entry": entry, "sl": sl, "time": mosul_time})
     
     return signals
 
 # ═══ MAIN LOOP ═══
 async def main():
     print("=" * 60)
-    print(" ICT Gold v15 REAL-TIME BOT (GitHub Actions)")
+    print("🚀 ICT Gold v22 FINAL-STATS (Python Edition)")
     print(f"⏱️  Polling: every {POLL_INTERVAL} seconds")
     print(f"🔄 Runtime: {MAX_RUNTIME // 60} minutes")
     print("=" * 60)
@@ -409,15 +471,15 @@ async def main():
                         tp3 = entry + (PT_P3 if sig['dir']=='BUY' else -PT_P3)
                         
                         msg = (
-                            f" <b>إشارة دخول جديدة!</b>\n"
+                            f"🚀 <b>إشارة دخول جديدة!</b>\n"
                             f"━━━━━━━━━━━━━━━\n"
                             f"📊 <b>النموذج:</b> {sig['model']}\n"
                             f"📈 <b>الاتجاه:</b> {sig['dir']}\n"
                             f"💰 <b>الدخول:</b> <code>{entry:.2f}</code>\n"
-                            f"🛑 <b>الستوب:</b> <code>{sig['sl']:.2f}</code>\n"
+                            f" <b>الستوب:</b> <code>{sig['sl']:.2f}</code>\n"
                             f"🎯 <b>الهدف 1:</b> <code>{tp1:.2f}</code> (100 نقطة)\n"
                             f"🎯 <b>الهدف 2:</b> <code>{tp2:.2f}</code> (150 نقطة)\n"
-                            f"🎯🎯 <b>الهدف 3:</b> <code>{tp3:.2f}</code> (200 نقطة)\n"
+                            f"🎯 <b>الهدف 3:</b> <code>{tp3:.2f}</code> (200 نقطة)\n"
                             f"━━━━━━━━━━━━━━━\n"
                             f"🕰️ <b>وقت الدخول (الموصل):</b> {sig['time']}"
                         )
